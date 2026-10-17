@@ -1,6 +1,9 @@
 package com.localassistant.app.ui.settings
 
 import android.app.Application
+import android.net.Uri
+import android.content.Intent
+import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import com.localassistant.app.data.remote.ApiClient
 import com.localassistant.app.data.settings.SettingsRepository
@@ -310,6 +313,30 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             android.util.Log.w(
                 "LocalAssistant",
                 "openAssistantSettings: none of ${intents.map { i -> i.action }} resolved - ${it.message}",
+            )
+        }
+    }
+
+    /**
+     * Opens the system page that exempts this app from battery optimizations.
+     *
+     * The always-on service is a foreground service, and Doze can suspend it while the
+     * device idles, which ends a wake chat mid-listen. The platform refuses that request
+     * when a service process launches it ("Calling startActivity() from outside of an
+     * Activity context"), so the user taps here instead and the intent is started from the
+     * app's own context, which is allowed.
+     */
+    fun requestBatteryExemption() {
+        try {
+            val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:${appContext.packageName}")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            appContext.startActivity(intent)
+        } catch (e: Exception) {
+            android.util.Log.w(
+                "SettingsViewModel",
+                "requestBatteryExemption: the exemption page could not be opened - ${describeFailure(e)}",
             )
         }
     }

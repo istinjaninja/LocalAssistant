@@ -137,7 +137,6 @@ class VoiceAssistantService : Service() {
         notificationManager = getSystemService(NotificationManager::class.java)
         
         createNotificationChannel()
-        requestBatteryOptimizationExemption()
         startForeground(NOTIFICATION_ID, buildNotification(STATE_IDLE))
         
         // Register battery receiver for energy-saving mode
@@ -152,9 +151,9 @@ class VoiceAssistantService : Service() {
         }
     }
 
-    /**
-     * Request battery optimization exemption so the service isn't killed by Doze mode.
-     */
+    // The battery-optimization exemption used to be requested here. The platform rejects
+    // startActivity() from a service process, so the Settings screen owns that request now
+    // that it runs in an app context.
     private fun requestBatteryOptimizationExemption() {
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -164,16 +163,11 @@ class VoiceAssistantService : Service() {
                 val isExempted = method.invoke(pm, packageName) as Boolean
                 
                 if (!isExempted) {
-                    android.util.Log.d("VoiceAssistantService", "Battery optimization not exempted. Requesting exemption...")
-                    try {
-                        val requestIntent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                            data = android.net.Uri.parse("package:$packageName")
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        startActivity(requestIntent)
-                    } catch (e: Exception) {
-                        android.util.Log.w("VoiceAssistantService", "Could not launch battery optimization settings: ${e.message}")
-                    }
+                    android.util.Log.w(
+                        "VoiceAssistantService",
+                        "Battery optimization is not exempted - Doze may suspend this service mid-listen. " +
+                            "The Settings screen offers the exemption request, which the platform accepts only from an app context.",
+                    )
                 } else {
                     android.util.Log.d("VoiceAssistantService", "Already exempted from battery optimizations")
                 }

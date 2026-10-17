@@ -451,6 +451,19 @@ fun SettingsScreen(onNavigateBack: () -> Unit, viewModel: SettingsViewModel = vi
                 }
             }
 
+            SettingsSection("Battery Optimization", "🔋", "Keep the always-on service alive while the tab sleeps") {
+                Text(
+                    text = "Android may suspend a foreground service once the device is idle, which ends a wake chat mid-listen. Tapping the button opens the system page that exempts this app from that; the request has to come from the app, not from the service itself.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = { viewModel.requestBatteryExemption() },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) { Text("Request Battery Exemption") }
+            }
+
             SettingsSection("Data Management", "💾", "Export, import, and manage your settings data") {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { showClearDataDialog = true }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Clear Data") }
