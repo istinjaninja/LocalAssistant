@@ -427,12 +427,40 @@ object ApiClient {
         return digits > 0
     }
     
+    /**
+     * Renders [s] as a JSON string literal.
+     *
+     * The JSON grammar forbids every control character from U+0000 to U+001F bare in a
+     * string, not just the line breaks and tabs that model output happens to emit most
+     * often; a single raw control byte makes llama.cpp answer 400 for the whole request,
+     * which fails the turn rather than the one field.
+     */
     private fun escapeJsonString(s: String): String {
-        return "\"${s.replace("\\", "\\\\")
-                   .replace("\"", "\\\"")
-                   .replace("\n", "\\n")
-                   .replace("\r", "\\r")
-                   .replace("\t", "\\t")}\""
+        val hexDigits = "0123456789abcdef"
+        val out = StringBuilder("\"")
+        for (c in s) {
+            when (c) {
+                '\\' -> out.append("\\\\")
+                '"' -> out.append("\\\"")
+                '\n' -> out.append("\\n")
+                '\r' -> out.append("\\r")
+                '\t' -> out.append("\\t")
+                '\u0008' -> out.append("\\b")
+                '\u000C' -> out.append("\\f")
+                else -> {
+                    if (c >= ' ') {
+                        out.append(c)
+                    } else {
+                        val code = c.toInt()
+                        out.append("\\u00")
+                        out.append(hexDigits[(code shr 4) and 0xF])
+                        out.append(hexDigits[code and 0xF])
+                    }
+                }
+            }
+        }
+        out.append('"')
+        return out.toString()
     }
     
     /**
