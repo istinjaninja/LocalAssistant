@@ -22,6 +22,7 @@ import com.localassistant.app.ui.theme.WAKE_REPLY_BUBBLE
 import com.localassistant.app.ui.theme.WAKE_PHASE_LISTENING
 import com.localassistant.app.ui.theme.WAKE_PHASE_THINKING
 import com.localassistant.app.ui.theme.WAKE_PHASE_ANSWERING
+import com.localassistant.app.ui.theme.WAKE_DIVIDER
 
 /**
  * The key the wake service uses to hand the user's request to a session.
@@ -151,12 +152,13 @@ private const val MAX_SCALE = 1.4f
  * be wider than the screen there and have its sides cut off.
  */
 private const val CARD_WIDTH = 1560
-private const val TEXT_SIZE = 22f
+private const val USER_TEXT_SIZE = 20f
+private const val REPLY_TEXT_SIZE = 22f
 private const val STATUS_SIZE = 17f
 private const val CARD_SIDE_PADDING = 44
-private const val CARD_TOP_PADDING = 28
-private const val CARD_BOTTOM_PADDING = 28
-private const val BUBBLE_PADDING = 26
+private const val CARD_TOP_PADDING = 32
+private const val CARD_BOTTOM_PADDING = 32
+private const val BUBBLE_PADDING = 32
 
 /**
  * How tall a line of text and the status line actually are, which is what the
@@ -198,7 +200,7 @@ private const val CARD_HEIGHT = 620
  * is allowed to show, so the last line of a reply is never cut off by the ceiling
  * itself - only by [REPLY_MAX_LINES].
  */
-private const val MAX_CARD_HEIGHT = 900
+private const val MAX_CARD_HEIGHT = 960
 
 /**
  * How much of the window the platform keeps for itself around the card.
@@ -274,16 +276,25 @@ private const val CARD_OUTER_WIDTH = CARD_WIDTH + CARD_SIDE_PADDING * 2
 private const val MAX_WINDOW_HEIGHT = MAX_CARD_HEIGHT + WINDOW_OVERHEAD + BOTTOM_MARGIN
 
 /**
- * The glyph that leads the status line, wearing the colour of the phase.
+ * How big the drawn status indicator is.
  *
- * It is a character rather than a drawn shape because a session has no drawable
- * to place: the only paint a widget can carry is a background, and a background
- * fills the whole widget. Giving it its own `TextView` in the status row is what
- * lets the dot wear the phase's colour while the label beside it stays muted -
- * one `TextView` can hold two colours, and the phase would lose its colour the
- * moment the label shared it.
+ * The glyph that used to lead the status line was a character the typeface had
+ * to carry, so it drew whatever the font drew - a thin ring that read as part of
+ * the words rather than as the state of the exchange. The indicator is now a
+ * childless `LinearLayout` wearing a rounded shape in the phase's colour: a
+ * background fills the whole widget, so the chip's padding **is** its size, which
+ * is the same honoured trick the ruler and the foot use for measuring.
  */
-private const val PHASE_DOT = "\u2B24"
+private const val CHIP_SIZE = 26
+
+/**
+ * How thick the rule between the two bubbles is.
+ *
+ * The bubbles are the same rounded sheet on the same card, so across a room they
+ * read as one block of ink; a faint rule between them is what separates the turn
+ * the user spoke from the answer, without a stroke API or a second panel.
+ */
+private const val DIVIDER_HEIGHT = 6
 
 /**
  * How rounded the card and the bubbles inside it are.
@@ -300,24 +311,29 @@ private const val PHASE_DOT = "\u2B24"
  * platform's own panel behind it cannot be touched.
  */
 private const val CARD_RADIUS = 28f
-private const val BUBBLE_RADIUS = 20f
+private const val USER_RADIUS = 16f
+private const val REPLY_RADIUS = 26f
 
 /**
- * The gap between the two bubbles inside the card.
+ * The one gap between blocks of the card: status to user bubble, bubble to rule,
+ * rule to answer bubble.
  *
- * It is padding on the user bubble rather than a spacer child, because the card
- * builds its children once and the structure cannot grow between shows.
+ * Every block is separated by the same room, which is what gives the card a
+ * vertical rhythm rather than a stack of boxes that each carry their own. It is
+ * padding on the block above rather than a spacer child, because the card builds
+ * its children once and the structure cannot grow between shows.
  */
-private const val BUBBLE_GAP = 20
+private const val BUBBLE_GAP = 24
 
 /**
- * The gap between the status dot and the label beside it.
+ * The gap between the status chip and the label beside it.
  *
  * A row lays its children flush against each other, so the breathing room the
- * card's own padding would give is nothing here - the gap has to be padding on
- * the dot itself, which is also what keeps the dot's ink clear of the label's.
+ * card's own padding would give is nothing here. The gap is left padding on the
+ * label rather than right padding on the chip, because a background fills a
+ * chip's whole widget - padding on the chip would widen the ink, not the gap.
  */
-private const val STATUS_DOT_GAP = 14
+private const val STATUS_DOT_GAP = 18
 
 /**
  * The main-axis orientation every container in the card is forced to.
@@ -344,7 +360,7 @@ private const val VERTICAL = 1
  * session builds its content view once and reuses it for every later show, so
  * the structure cannot grow with the text.
  *
- * [LINE_CHARS] is chosen so a full line fits [BUBBLE_TEXT_WIDTH]: at [TEXT_SIZE] a
+ * [LINE_CHARS] is chosen so a full line fits [BUBBLE_TEXT_WIDTH]: at [REPLY_TEXT_SIZE] a
  * character is roughly 22 px wide, so 64 characters fill a bubble without
  * overflowing it. The counts are deliberately small - a request is a spoken
  * sentence and an answer is read aloud - because the card must stay a card:
@@ -519,7 +535,12 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     private val foot = LinearLayout(context)
     private val panel = LinearLayout(context)
     private val statusLine = TextView(context)
-    private val statusDot = TextView(context)
+
+    /**
+     * The drawn indicator that leads the status line - see [CHIP_SIZE] for why a
+     * glyph could not be used.
+     */
+    private val phaseChip = LinearLayout(context)
     private val userBubble = LinearLayout(context)
     private val userLines = (0 until USER_MAX_LINES).map { _ -> TextView(context) }
     private val replyBubble = LinearLayout(context)
@@ -549,12 +570,18 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     private val ruler = LinearLayout(context)
     private val statusRow = LinearLayout(context)
     private val userRow = LinearLayout(context)
+    private val divider = LinearLayout(context)
     private val replyRow = LinearLayout(context)
     private var cardShape = rounded(WAKE_CARD_SURFACE, CARD_RADIUS)
     private var elevationShape = rounded(WAKE_CARD_ELEVATION, CARD_RADIUS + CARD_ELEVATION)
     private val clearShape = rounded(TRANSPARENT, CARD_RADIUS)
-    private var userShape = rounded(WAKE_USER_BUBBLE, BUBBLE_RADIUS)
-    private var replyShape = rounded(WAKE_REPLY_BUBBLE, BUBBLE_RADIUS)
+    private var userShape = rounded(WAKE_USER_BUBBLE, USER_RADIUS)
+    private var replyShape = rounded(WAKE_REPLY_BUBBLE, REPLY_RADIUS)
+    private var dividerShape = rounded(WAKE_DIVIDER, 0f)
+    private var chipListening = rounded(WAKE_PHASE_LISTENING, CHIP_SIZE / 2f)
+    private var chipThinking = rounded(WAKE_PHASE_THINKING, CHIP_SIZE / 2f)
+    private var chipAnswering = rounded(WAKE_PHASE_ANSWERING, CHIP_SIZE / 2f)
+    private var chipFault = rounded(GRUVBOX_ERROR, CHIP_SIZE / 2f)
 
     /**
      * Records what the platform is about to show.
@@ -703,8 +730,13 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         scale = target
         cardShape = rounded(WAKE_CARD_SURFACE, pt(CARD_RADIUS))
         elevationShape = rounded(WAKE_CARD_ELEVATION, pt(CARD_RADIUS + CARD_ELEVATION))
-        userShape = rounded(WAKE_USER_BUBBLE, pt(BUBBLE_RADIUS))
-        replyShape = rounded(WAKE_REPLY_BUBBLE, pt(BUBBLE_RADIUS))
+        userShape = rounded(WAKE_USER_BUBBLE, pt(USER_RADIUS))
+        replyShape = rounded(WAKE_REPLY_BUBBLE, pt(REPLY_RADIUS))
+        dividerShape = rounded(WAKE_DIVIDER, 0f)
+        chipListening = rounded(WAKE_PHASE_LISTENING, pt(CHIP_SIZE / 2f))
+        chipThinking = rounded(WAKE_PHASE_THINKING, pt(CHIP_SIZE / 2f))
+        chipAnswering = rounded(WAKE_PHASE_ANSWERING, pt(CHIP_SIZE / 2f))
+        chipFault = rounded(GRUVBOX_ERROR, pt(CHIP_SIZE / 2f))
         Log.i(
             "WakeChatSessionService",
             "Scaled the card to $scale for a $measuredShortEdge-px short edge of the display"
@@ -726,11 +758,12 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         foot.setPadding(0, px(BOTTOM_MARGIN), 0, 0)
         card.setPadding(px(CARD_ELEVATION), px(CARD_ELEVATION), px(CARD_ELEVATION), px(CARD_ELEVATION))
         statusRow.setPadding(0, 0, 0, px(BUBBLE_GAP))
-        statusDot.textSize = pt(STATUS_SIZE)
-        statusDot.setPadding(0, 0, px(STATUS_DOT_GAP), 0)
+        phaseChip.setPadding(px(CHIP_SIZE / 2), px(CHIP_SIZE / 2), px(CHIP_SIZE / 2), px(CHIP_SIZE / 2))
+        statusLine.setPadding(px(STATUS_DOT_GAP), 0, 0, 0)
         statusLine.textSize = pt(STATUS_SIZE)
-        userLines.forEach { line -> line.textSize = pt(TEXT_SIZE) }
-        replyLines.forEach { line -> line.textSize = pt(TEXT_SIZE) }
+        divider.setPadding(0, px(DIVIDER_HEIGHT / 2), 0, px(DIVIDER_HEIGHT / 2))
+        userLines.forEach { line -> line.textSize = pt(USER_TEXT_SIZE) }
+        replyLines.forEach { line -> line.textSize = pt(REPLY_TEXT_SIZE) }
     }
 
     /**
@@ -742,13 +775,13 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
      * no ink while still measuring the way the real card does.
      */
     private fun clearCard() {
-        statusDot.text = ""
         statusLine.text = ""
         userLines.forEach { line -> line.text = "" }
         replyLines.forEach { line -> line.text = "" }
         card.background = clearShape
         panel.background = clearShape
-        statusDot.setTextColor(TRANSPARENT)
+        phaseChip.background = clearShape
+        divider.background = clearShape
         statusLine.setTextColor(TRANSPARENT)
         userBubble.background = clearShape
         replyBubble.background = clearShape
@@ -786,7 +819,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         panel.addView(ruler)
         panel.addView(statusRow)
         statusRow.setGravity(Gravity.LEFT)
-        statusRow.addView(statusDot)
+        statusRow.addView(phaseChip)
         statusRow.addView(statusLine)
         panel.addView(userRow)
         userRow.setGravity(Gravity.TOP or Gravity.LEFT)
@@ -797,6 +830,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
             line.setGravity(Gravity.LEFT)
             line.setTextColor(GRUVBOX_ON_SURFACE)
         }
+        panel.addView(divider)
         panel.addView(replyRow)
         replyRow.setGravity(Gravity.TOP or Gravity.RIGHT)
         replyRow.addView(replyBubble)
@@ -822,15 +856,15 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
      * always says what it is doing even before a word has been heard.
      */
     private fun paint() {
-        statusDot.text = ""
         statusLine.text = ""
         userLines.forEach { line -> line.text = "" }
         replyLines.forEach { line -> line.text = "" }
         val closed = state == SESSION_STATE_CLOSE
+        val bothTurns = request.isNotBlank() && reply.isNotBlank()
         card.background = if (closed) clearShape else elevationShape
         panel.background = if (closed) clearShape else cardShape
-        statusDot.text = if (closed) "" else PHASE_DOT
-        statusDot.setTextColor(if (closed) TRANSPARENT else phaseColor())
+        divider.background = if (closed || !bothTurns) clearShape else dividerShape
+        phaseChip.background = if (closed) clearShape else phaseShape()
         statusLine.text = if (closed) "" else statusLabel()
         statusLine.setTextColor(if (closed) TRANSPARENT else GRUVBOX_ON_SURFACE_MUTED)
         userBubble.background = if (request.isBlank()) clearShape else userShape
@@ -865,11 +899,13 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         val answer =
             if (replyLineCount == 0) 0
             else px(BUBBLE_PADDING) * 2 + replyLineCount * px(LINE_HEIGHT)
-        return px(CARD_TOP_PADDING) + px(CARD_BOTTOM_PADDING) + status + user + answer
+        // The rule measures to its own padding whatever it paints, so it always
+        // costs the card this much room.
+        return px(CARD_TOP_PADDING) + px(CARD_BOTTOM_PADDING) + status + px(DIVIDER_HEIGHT) + user + answer
     }
 
     /**
-     * The small line beside the status dot that says what the exchange is doing.
+     * The small line beside the status chip that says what the exchange is doing.
      *
      * A session only ever sees the state the wake service put in the bundle, so
      * the label is derived here rather than sent: the same show that grows the
@@ -888,19 +924,22 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     }
 
     /**
-     * The colour of the status dot, which is the exchange's phase wearing the
+     * The shape the status chip wears, which is the exchange's phase wearing the
      * colour it is doing in.
      *
-     * Only the dot wears it: the label beside it stays [GRUVBOX_ON_SURFACE_MUTED], so the phase is
-     * legible from across a room by colour alone while the words stay quiet
-     * instead of shouting the state. A state the wake service does not name is
-     * taken as a fault and wears [GRUVBOX_ERROR].
+     * The chip carries a whole shape rather than a colour because a background is
+     * the only paint a widget can take, so one shape exists per phase and is
+     * rebuilt only when the card rescales. Only the chip wears it: the label
+     * beside it stays [GRUVBOX_ON_SURFACE_MUTED], so the phase is legible from
+     * across a room by colour alone while the words stay quiet instead of shouting
+     * the state. A state the wake service does not name is taken as a fault and
+     * wears [GRUVBOX_ERROR].
      */
-    private fun phaseColor(): Int = when (state) {
-        SESSION_STATE_LISTENING -> WAKE_PHASE_LISTENING
-        SESSION_STATE_REQUEST -> WAKE_PHASE_THINKING
-        SESSION_STATE_STREAMING, SESSION_STATE_SPEAKING, SESSION_STATE_REPLY -> WAKE_PHASE_ANSWERING
-        else -> GRUVBOX_ERROR
+    private fun phaseShape(): GradientDrawable = when (state) {
+        SESSION_STATE_LISTENING -> chipListening
+        SESSION_STATE_REQUEST -> chipThinking
+        SESSION_STATE_STREAMING, SESSION_STATE_SPEAKING, SESSION_STATE_REPLY -> chipAnswering
+        else -> chipFault
     }
 
     /**
@@ -972,7 +1011,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         }
         Log.i(
             "WakeChatSessionService",
-            "Shown state=$state scale=$scale stageW=${stage.width} stageH=${stage.height} cardW=${card.width} cardH=${card.height} panelW=${panel.width} panelH=${panel.height} rowW=${statusRow.width} dotW=${statusDot.width} statusW=${statusLine.width} statusH=${statusLine.height} u0W=${userLines[0].width} u0H=${userLines[0].height} u0T=${userLines[0].text.length} r0T=${replyLines[0].text.length} userBW=${userBubble.width} userBH=${userBubble.height} replyBW=${replyBubble.width} replyBH=${replyBubble.height} userRowW=${userRow.width} replyRowW=${replyRow.width}"
+            "Shown state=$state scale=$scale stageW=${stage.width} stageH=${stage.height} cardW=${card.width} cardH=${card.height} panelW=${panel.width} panelH=${panel.height} rowW=${statusRow.width} chipW=${phaseChip.width} chipH=${phaseChip.height} statusW=${statusLine.width} statusH=${statusLine.height} divH=${divider.height} u0W=${userLines[0].width} u0H=${userLines[0].height} u0T=${userLines[0].text.length} r0T=${replyLines[0].text.length} userBW=${userBubble.width} userBH=${userBubble.height} replyBW=${replyBubble.width} replyBH=${replyBubble.height} userRowW=${userRow.width} replyRowW=${replyRow.width}"
         )
         if (state == SESSION_STATE_CLOSE) finish()
     }

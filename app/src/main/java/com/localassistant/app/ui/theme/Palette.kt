@@ -104,6 +104,16 @@ const val WAKE_USER_BUBBLE = GRUVBOX_SURFACE_MED
 const val WAKE_REPLY_BUBBLE = 0xFF342A1F.toInt()
 
 /**
+ * The rule drawn between the two bubbles.
+ *
+ * The bubbles are the same rounded sheet on the same card, so at a glance across
+ * a room they read as one block of ink. A faint rule between them is what
+ * separates the turn the user spoke from the answer, without a stroke API or a
+ * second panel.
+ */
+const val WAKE_DIVIDER = 0x2AE8E8E8.toInt()
+
+/**
  * The colours the status dot wears, one per phase of the exchange.
  *
  * The dot is what makes the status line readable at a glance across a room: the
