@@ -477,10 +477,10 @@ object ApiClient {
         val reasoningBuilder = StringBuilder()
         android.util.Log.d("ApiClient", "Starting SSE stream read")
 
+        var lineCount = 0
         try {
             // Use buffered reader for proper streaming
             val reader = java.io.BufferedReader(java.io.InputStreamReader(body.byteStream()))
-            var lineCount = 0
             while (true) {
                 if (abortSignal?.get() == true) {
                     android.util.Log.w("ApiClient", "SSE stream abandoned after $lineCount lines - the caller interrupted the answer")
@@ -520,9 +520,13 @@ object ApiClient {
                     }
                 }
             }
-        } catch (_: Exception) {
-            android.util.Log.e("ApiClient", "Error reading SSE stream")
-            // Handle streaming errors gracefully
+        } catch (e: Exception) {
+            // A swallowed read error is indistinguishable from a model that answered
+            // with nothing, and reasoning models already answer with nothing on their
+            // first chunk - so the UI showed a blank reply for what was really a lost
+            // stream. Every caller wraps this call in a handler that reports the reason.
+            android.util.Log.e("ApiClient", "SSE stream read failed after $lineCount lines: ${e.message}", e)
+            throw IOException("LLM stream interrupted after $lineCount lines: ${e.message ?: "connection lost"}")
         }
 
         // Answers that embed <think> tags inside the content deltas are split here as well,
