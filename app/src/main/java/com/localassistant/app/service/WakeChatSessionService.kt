@@ -92,7 +92,39 @@ const val SESSION_STATE_CLOSE = "close"
  */
 
 /**
+ * The short edge of the display the design values below were measured on.
+ *
+ * A session cannot ask for a density: `getDisplayMetrics`,
+ * `android.graphics.DisplayMetrics`, `android.util.Metrics`,
+ * `android.os.DisplayManager`, `android.graphics.types.*`,
+ * `android.content.Configuration`/`Resolution` and `android.os.FileUri` are all
+ * unresolved here, and the [android.view.Window] the session is handed answers
+ * `setLayout` but exposes none of its own geometry (`width`, `height`, `left`,
+ * `top`, `right`, `bottom`, `frame`, `getParameters` are all unresolved). The one
+ * display measurement that does work is indirect: leave the window as the
+ * platform builds it - a `fillxfill` surface over the whole display - and read
+ * back the card, which the window stretches to fill. That measured short edge
+ * divided by this baseline is [scale], and it is the density-independent basis
+ * available here: a physical edge, not a pixel count assumed to mean the same
+ * thing on every screen.
+ */
+private const val BASE_SHORT_EDGE = 1840
+
+/**
+ * How far the design may shrink or grow relative to that reference display.
+ *
+ * Taken literally, a small phone would get a card whose text is unreadable across
+ * a room and a large display would get a card taller than an exchange needs, so
+ * the scale is clamped: the card stays legible and the proportions stay sane at
+ * both ends. The clamp is what the fallback relies on, too - an unmeasured
+ * display leaves the scale at 1, which is the shipped design.
+ */
+private const val MIN_SCALE = 0.6f
+private const val MAX_SCALE = 1.4f
+
+/**
  * How big the card is.
+
  *
  * A session cannot read the display: `android.graphics.DisplayMetrics`,
  * `getDisplayMetrics` and `android.widget.internal` (a `Filler` spacer) are all
@@ -105,11 +137,17 @@ const val SESSION_STATE_CLOSE = "close"
  * exactly that width, contributes no height, and pins the card to it whatever
  * the text inside it happens to be.
  *
- * [CARD_WIDTH] is a fixed pixel width rather than a fraction of the screen, and
- * that is what makes the card the same size in landscape and portrait: it is
- * measured against the **short** edge of the display, so the same card still fits
- * when the device turns to portrait - a width taken from the long edge would be
- * wider than the screen there and the sides of the card would be cut off.
+ * The numbers below are a **design**: they are the values measured on the
+ * reference display, whose short edge is [BASE_SHORT_EDGE] px. The session
+ * measures the display it is actually running on (see [measureDisplay]) and
+ * multiplies the whole set by one [scale], so the card keeps its proportions on
+ * a phone as on the tab it was tuned on - a card built from these numbers
+ * literally is what made the sides of the card get cut off on smaller displays.
+ *
+ * The scale comes from the **short** edge, which is also what makes the card the
+ * same size in landscape and portrait: a width that fits across the short edge
+ * still fits when the device turns, where a width taken from the long edge would
+ * be wider than the screen there and have its sides cut off.
  */
 private const val CARD_WIDTH = 1560
 private const val TEXT_SIZE = 22f
@@ -411,6 +449,36 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     private var riseFrame = 0
 
     /**
+     * The short edge of the display, in px, as measured from the window the
+     * platform lays out for the first show; zero until measured.
+     *
+     * See [measureDisplay] for how the session gets it at all, and see [scale]
+     * for what it is used for. Zero is the fallback: an exchange that never
+     * measures draws at the shipped design.
+     */
+    private var measuredShortEdge = 0
+
+    /**
+     * How much bigger the card is than its design, which is what every metric
+     * in this file is multiplied by.
+     *
+     * One factor rather than a per-metric override is the point: the card is a
+     * design, and scaling all of it together is what keeps the text inside the
+     * bubbles, the bubbles inside the card and the card inside the display in the
+     * same relationship on every screen.
+     */
+    private var scale = 1f
+
+    /**
+     * Whether the next show is still the one that measures the display.
+     *
+     * Only the first show of an exchange can do the measuring, and it gets one
+     * attempt: if the card reads back nothing then, the exchange draws at the
+     * shipped design rather than measuring again on a window that is already cut.
+     */
+    private var measuring = true
+
+    /**
      * What the next show must draw, wrapped once so the window and the paint
      * agree on how many lines there are.
      */
@@ -462,10 +530,10 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     private val statusRow = LinearLayout(context)
     private val userRow = LinearLayout(context)
     private val replyRow = LinearLayout(context)
-    private val cardShape = rounded(WAKE_CARD_SURFACE, CARD_RADIUS)
+    private var cardShape = rounded(WAKE_CARD_SURFACE, CARD_RADIUS)
     private val clearShape = rounded(TRANSPARENT, CARD_RADIUS)
-    private val userShape = rounded(WAKE_USER_BUBBLE, BUBBLE_RADIUS)
-    private val replyShape = rounded(WAKE_REPLY_BUBBLE, BUBBLE_RADIUS)
+    private var userShape = rounded(WAKE_USER_BUBBLE, BUBBLE_RADIUS)
+    private var replyShape = rounded(WAKE_REPLY_BUBBLE, BUBBLE_RADIUS)
 
     /**
      * Records what the platform is about to show.
@@ -480,15 +548,17 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         state = args.getString(SESSION_STATE_KEY) ?: ""
         request = args.getString(SESSION_REQUEST_KEY) ?: ""
         reply = args.getString(SESSION_REPLY_KEY) ?: ""
-        userShown = wrap(request, USER_MAX_LINES)
-        replyShown = wrap(reply, REPLY_MAX_LINES)
         if (state == SESSION_STATE_RISE) {
             if (riseFrame < RISE_FRAMES) riseFrame++
         } else {
             riseFrame = RISE_FRAMES
         }
-        sizeWindow()
-        paint()
+        rescale()
+        userShown = wrap(request, USER_MAX_LINES)
+        replyShown = wrap(reply, REPLY_MAX_LINES)
+        if (measuring && state == SESSION_STATE_RISE) measureDisplay() else sizeWindow()
+        metrics()
+        if (measuring) clearCard() else paint()
     }
 
     /**
@@ -518,29 +588,146 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
      * at, and [MAX_WINDOW_HEIGHT] is the ceiling a long answer may not pass.
      */
     private fun sizeWindow() {
-        val dialog = window
-        if (dialog == null) {
-            Log.i("WakeChatSessionService", "No window yet, so nothing to cut")
-            return
-        }
-        val surface = dialog.window
-        if (surface == null) {
-            Log.i("WakeChatSessionService", "The dialog carries no window to cut")
-            return
-        }
+        val surface = windowSurface() ?: return
         val needed = if (state == SESSION_STATE_CLOSE) 0 else neededHeight(userShown.size, replyShown.size)
         val risen = riseHeight()
         val wanted = if (needed > risen) needed else risen
-        val tall = if (wanted > MAX_CARD_HEIGHT) MAX_CARD_HEIGHT else wanted
+        val limit = px(MAX_CARD_HEIGHT)
+        val tall = if (wanted > limit) limit else wanted
         val cut = tall + WINDOW_OVERHEAD + BOTTOM_MARGIN
-        val height = if (cut > MAX_WINDOW_HEIGHT) MAX_WINDOW_HEIGHT else cut
-        surface.setLayout(CARD_OUTER_WIDTH, height)
+        val ceiling = px(MAX_WINDOW_HEIGHT)
+        val height = if (cut > ceiling) ceiling else cut
+        surface.setLayout(px(CARD_OUTER_WIDTH), height)
         surface.setGravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         surface.setBackgroundDrawable(clearShape)
         Log.i(
             "WakeChatSessionService",
-            "Cut the window to ${CARD_OUTER_WIDTH} by ${height} for a ${tall}-tall card at frame ${riseFrame}"
+            "Cut the window to ${px(CARD_OUTER_WIDTH)} by ${height} for a ${tall}-tall card at frame ${riseFrame} (scale $scale)"
         )
+    }
+
+    /**
+     * The window the system raised for the exchange, or null until it exists.
+     *
+     * [window] is the session's [android.app.Dialog] and that Dialog answers
+     * [android.view.Window], which is the only object here that takes
+     * `setLayout` - the session itself does not answer it.
+     */
+    private fun windowSurface(): android.view.Window? {
+        val dialog = window
+        if (dialog == null) {
+            Log.i("WakeChatSessionService", "No window yet, so nothing to cut")
+            return null
+        }
+        val surface = dialog.window
+        if (surface == null) {
+            Log.i("WakeChatSessionService", "The dialog carries no window to cut")
+            return null
+        }
+        return surface
+    }
+
+    /**
+     * Leaves the first show's window exactly as the platform builds it, so the
+     * card can be read back as the display.
+     *
+     * A session cannot ask for a display or a density (see [BASE_SHORT_EDGE]), so
+     * the measurement is indirect: AOSP lays the session window out to fill the
+     * display while it is *not* yet visible, and the card is stretched to fill
+     * that window - the same relationship [sizeWindow] relies on for height. A
+     * show that never calls `setLayout` therefore puts a card the size of the
+     * display on screen, and [onShow] reads the short edge off it.
+     *
+     * Nothing is painted for this show (see [clearCard]), so the card that fills
+     * the display is invisible; the panel the platform paints behind it is still
+     * cleared, so the frame shows the screen underneath rather than a box over it.
+     */
+    private fun measureDisplay() {
+        val surface = windowSurface() ?: return
+        surface.setBackgroundDrawable(clearShape)
+        Log.i(
+            "WakeChatSessionService",
+            "Measurement show: leaving the window as the platform built it so the card can be read as the display"
+        )
+    }
+
+    /**
+     * The current scale, applied to a design length.
+     *
+     * Every metric in this file is a design value at [BASE_SHORT_EDGE]; this is
+     * the one conversion between that design and the display measured here.
+     */
+    private fun px(base: Int): Int = (base * scale).toInt()
+
+    /**
+     * The current scale, applied to a design text size or corner radius.
+     */
+    private fun pt(base: Float): Float = base * scale
+
+    /**
+     * Re-derives the scale from the measured display, and rebuilds the shapes at
+     * the scaled radii.
+     *
+     * Called on every show rather than once, because the measurement lands
+     * between shows: the first show measures and the one after it is the first
+     * that can draw at the real size. Re-deriving is cheap and idempotent, and an
+     * exchange that never measured leaves the shipped design alone.
+     */
+    private fun rescale() {
+        if (measuredShortEdge <= 0) return
+        val raw = measuredShortEdge.toFloat() / BASE_SHORT_EDGE
+        val target = if (raw < MIN_SCALE) MIN_SCALE else if (raw > MAX_SCALE) MAX_SCALE else raw
+        if (target == scale) return
+        scale = target
+        cardShape = rounded(WAKE_CARD_SURFACE, pt(CARD_RADIUS))
+        userShape = rounded(WAKE_USER_BUBBLE, pt(BUBBLE_RADIUS))
+        replyShape = rounded(WAKE_REPLY_BUBBLE, pt(BUBBLE_RADIUS))
+        Log.i(
+            "WakeChatSessionService",
+            "Scaled the card to $scale for a $measuredShortEdge-px short edge of the display"
+        )
+    }
+
+    /**
+     * Applies the current scale to every metric the card draws with.
+     *
+     * Applied on every show rather than wired once, because the scale is not
+     * known until the display has been measured and the first show is the
+     * measurement. [onCreateContentView] wires the structure once; these setters
+     * are the numeric half of that wiring, and re-applying them is what lets the
+     * show after the measurement draw at the real size.
+     */
+    private fun metrics() {
+        panel.setPadding(px(CARD_SIDE_PADDING), px(CARD_TOP_PADDING), px(CARD_SIDE_PADDING), px(CARD_BOTTOM_PADDING))
+        ruler.setPadding(px(CARD_WIDTH) / 2, 0, px(CARD_WIDTH) / 2, 0)
+        statusRow.setPadding(0, 0, 0, px(BUBBLE_GAP))
+        statusDot.textSize = pt(STATUS_SIZE)
+        statusDot.setPadding(0, 0, px(STATUS_DOT_GAP), 0)
+        statusLine.textSize = pt(STATUS_SIZE)
+        userLines.forEach { line -> line.textSize = pt(TEXT_SIZE) }
+        replyLines.forEach { line -> line.textSize = pt(TEXT_SIZE) }
+    }
+
+    /**
+     * Draws nothing at all - what the measurement show paints.
+     *
+     * The measurement show's card is as large as the display, so any ink at all
+     * would cover the screen for a frame. An empty `TextView` measures nothing and
+     * a transparent background paints nothing, which is how the show contributes
+     * no ink while still measuring the way the real card does.
+     */
+    private fun clearCard() {
+        statusDot.text = ""
+        statusLine.text = ""
+        userLines.forEach { line -> line.text = "" }
+        replyLines.forEach { line -> line.text = "" }
+        panel.background = clearShape
+        statusDot.setTextColor(TRANSPARENT)
+        statusLine.setTextColor(TRANSPARENT)
+        userBubble.background = clearShape
+        replyBubble.background = clearShape
+        userBubble.setPadding(0, 0, 0, 0)
+        replyBubble.setPadding(0, 0, 0, 0)
     }
 
     /**
@@ -569,40 +756,31 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         card.addView(panel)
         panel.setGravity(Gravity.TOP or Gravity.CENTER_HORIZONTAL)
         panel.setOrientation(VERTICAL)
-        panel.setPadding(CARD_SIDE_PADDING, CARD_TOP_PADDING, CARD_SIDE_PADDING, CARD_BOTTOM_PADDING)
         panel.addView(ruler)
-        ruler.setPadding(CARD_WIDTH / 2, 0, CARD_WIDTH / 2, 0)
         panel.addView(statusRow)
         statusRow.setGravity(Gravity.LEFT)
-        statusRow.setPadding(0, 0, 0, BUBBLE_GAP)
         statusRow.addView(statusDot)
-        statusDot.textSize = STATUS_SIZE
-        statusDot.setPadding(0, 0, STATUS_DOT_GAP, 0)
         statusRow.addView(statusLine)
-        statusLine.textSize = STATUS_SIZE
         panel.addView(userRow)
         userRow.setGravity(Gravity.TOP or Gravity.LEFT)
         userRow.addView(userBubble)
         userBubble.setOrientation(VERTICAL)
-        userBubble.setPadding(BUBBLE_PADDING, BUBBLE_PADDING, BUBBLE_PADDING, BUBBLE_PADDING + BUBBLE_GAP)
         userLines.forEach { line ->
             userBubble.addView(line)
             line.setGravity(Gravity.LEFT)
-            line.textSize = TEXT_SIZE
             line.setTextColor(GRUVBOX_ON_SURFACE)
         }
         panel.addView(replyRow)
         replyRow.setGravity(Gravity.TOP or Gravity.RIGHT)
         replyRow.addView(replyBubble)
         replyBubble.setOrientation(VERTICAL)
-        replyBubble.setPadding(BUBBLE_PADDING, BUBBLE_PADDING, BUBBLE_PADDING, BUBBLE_PADDING)
         replyLines.forEach { line ->
             replyBubble.addView(line)
             line.setGravity(Gravity.RIGHT)
-            line.textSize = TEXT_SIZE
             line.setTextColor(GRUVBOX_PRIMARY)
         }
-        paint()
+        metrics()
+        if (measuring) clearCard() else paint()
         return stage
     }
 
@@ -629,9 +807,9 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         statusLine.setTextColor(if (closed) TRANSPARENT else GRUVBOX_ON_SURFACE_MUTED)
         userBubble.background = if (request.isBlank()) clearShape else userShape
         replyBubble.background = if (reply.isBlank()) clearShape else replyShape
-        val userPad = if (request.isBlank()) 0 else BUBBLE_PADDING
-        userBubble.setPadding(userPad, userPad, userPad, userPad + if (request.isBlank()) 0 else BUBBLE_GAP)
-        val replyPad = if (reply.isBlank()) 0 else BUBBLE_PADDING
+        val userPad = if (request.isBlank()) 0 else px(BUBBLE_PADDING)
+        userBubble.setPadding(userPad, userPad, userPad, userPad + if (request.isBlank()) 0 else px(BUBBLE_GAP))
+        val replyPad = if (reply.isBlank()) 0 else px(BUBBLE_PADDING)
         replyBubble.setPadding(replyPad, replyPad, replyPad, replyPad)
         userShown.forEachIndexed { index, line ->
             if (index < userLines.size) userLines[index].text = line
@@ -652,14 +830,14 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
      * [LINE_HEIGHT] and [STATUS_HEIGHT] are the only line boxes this can see.
      */
     private fun neededHeight(userLineCount: Int, replyLineCount: Int): Int {
-        val status = STATUS_HEIGHT + BUBBLE_GAP
+        val status = px(STATUS_HEIGHT) + px(BUBBLE_GAP)
         val user =
             if (userLineCount == 0) 0
-            else BUBBLE_PADDING * 2 + userLineCount * LINE_HEIGHT + BUBBLE_GAP
+            else px(BUBBLE_PADDING) * 2 + userLineCount * px(LINE_HEIGHT) + px(BUBBLE_GAP)
         val answer =
             if (replyLineCount == 0) 0
-            else BUBBLE_PADDING * 2 + replyLineCount * LINE_HEIGHT
-        return CARD_TOP_PADDING + CARD_BOTTOM_PADDING + status + user + answer
+            else px(BUBBLE_PADDING) * 2 + replyLineCount * px(LINE_HEIGHT)
+        return px(CARD_TOP_PADDING) + px(CARD_BOTTOM_PADDING) + status + user + answer
     }
 
     /**
@@ -709,9 +887,9 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
      */
     private fun riseHeight(): Int {
         if (state == SESSION_STATE_CLOSE) return 0
-        if (riseFrame >= RISE_FRAMES) return CARD_HEIGHT
+        if (riseFrame >= RISE_FRAMES) return px(CARD_HEIGHT)
         val remaining = 1f - (riseFrame - 1) / (RISE_FRAMES - 1f)
-        return (CARD_HEIGHT * (1f - remaining * remaining)).toInt()
+        return (px(CARD_HEIGHT) * (1f - remaining * remaining)).toInt()
     }
 
     /**
@@ -734,16 +912,39 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     }
 
     /**
-     * Tears the window down when the exchange has been closed.
+     * Tears the window down when the exchange has been closed, and reads the
+     * display back off the card the measurement show stretched.
      *
      * The close is requested by [WakeChatService] through
      * [SESSION_STATE_CLOSE], which [paint] already draws as nothing, so the
      * window is invisible even if finishing it only hides it.
+     *
+     * The read-back happens here because AOSP has laid the window out before it
+     * shows it: after the show that left it as the platform built it, the card
+     * measures to the display less [WINDOW_OVERHEAD], which is the only display
+     * measurement available to a session (see [BASE_SHORT_EDGE]). A card that
+     * reads back nothing leaves the scale at 1, which is the shipped design.
      */
     override fun onShow(args: android.os.Bundle?, showFlags: Int) {
+        if (measuring) {
+            measuring = false
+            val short = if (card.width < card.height) card.width else card.height
+            if (short > 0) {
+                measuredShortEdge = short + WINDOW_OVERHEAD
+                Log.i(
+                    "WakeChatSessionService",
+                    "Measured the display off a stretched card: ${card.width}x${card.height}, short edge $measuredShortEdge px"
+                )
+            } else {
+                Log.i(
+                    "WakeChatSessionService",
+                    "The stretched card measured nothing, so the card stays at the shipped design"
+                )
+            }
+        }
         Log.i(
             "WakeChatSessionService",
-            "Shown state=$state stageW=${stage.width} stageH=${stage.height} cardW=${card.width} cardH=${card.height} panelW=${panel.width} panelH=${panel.height} rowW=${statusRow.width} dotW=${statusDot.width} statusW=${statusLine.width} statusH=${statusLine.height} u0W=${userLines[0].width} u0H=${userLines[0].height} u0T=${userLines[0].text.length} r0T=${replyLines[0].text.length} userBW=${userBubble.width} userBH=${userBubble.height} replyBW=${replyBubble.width} replyBH=${replyBubble.height} userRowW=${userRow.width} replyRowW=${replyRow.width}"
+            "Shown state=$state scale=$scale stageW=${stage.width} stageH=${stage.height} cardW=${card.width} cardH=${card.height} panelW=${panel.width} panelH=${panel.height} rowW=${statusRow.width} dotW=${statusDot.width} statusW=${statusLine.width} statusH=${statusLine.height} u0W=${userLines[0].width} u0H=${userLines[0].height} u0T=${userLines[0].text.length} r0T=${replyLines[0].text.length} userBW=${userBubble.width} userBH=${userBubble.height} replyBW=${replyBubble.width} replyBH=${replyBubble.height} userRowW=${userRow.width} replyRowW=${replyRow.width}"
         )
         if (state == SESSION_STATE_CLOSE) finish()
     }
@@ -761,12 +962,13 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
      */
     private fun wrap(text: String, maxLines: Int): List<String> {
         val lines = mutableListOf<String>()
+        val budget = px(LINE_CHARS)
         var rest = text.trim()
         while (rest.isNotEmpty() && lines.size < maxLines) {
             val last = lines.size == maxLines - 1
             var cut = rest.length
-            if (cut > LINE_CHARS) {
-                val room = if (last) LINE_CHARS - 1 else LINE_CHARS
+            if (cut > budget) {
+                val room = if (last) budget - 1 else budget
                 val space = rest.substring(0, room).lastIndexOf(' ')
                 cut = if (space > room / 3) space else room
             }
@@ -789,6 +991,9 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         request = ""
         reply = ""
         riseFrame = 0
+        measuring = true
+        measuredShortEdge = 0
+        scale = 1f
     }
 
     /**
