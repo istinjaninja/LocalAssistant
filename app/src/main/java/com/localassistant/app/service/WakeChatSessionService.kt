@@ -297,6 +297,19 @@ private const val CHIP_SIZE = 26
 private const val DIVIDER_HEIGHT = 6
 
 /**
+ * How thick the underline beneath a still-arriving answer is.
+ *
+ * While the reply is streaming, the answer block looks the same whether the last
+ * chunk landed a heartbeat ago or the model has gone quiet, so the card gives no
+ * hint that the sentence is unfinished. A bar under the answer that toggles
+ * between shows reads as a cursor: a session is drawn as a sequence of shows and
+ * has no animation API, so the blink is a counter advanced in [onPrepareShow] and
+ * read in [paint]. The bar is always padded - ink or no ink - so toggling it
+ * never jumps the card.
+ */
+private const val CARET_HEIGHT = 8
+
+/**
  * How rounded the card and the bubbles inside it are.
  *
  * A flat `setBackgroundColor(Int)` paints a sharp rectangle, which is what the
@@ -477,6 +490,15 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     private var riseFrame = 0
 
     /**
+     * Which blink of the caret the next show is, so a still-arriving answer can
+     * toggle its underline - see [CARET_HEIGHT] for why a blink is a counter.
+     *
+     * The session is created per exchange, so this counts from the first show of
+     * an exchange and never needs resetting.
+     */
+    private var caretFrame = 0
+
+    /**
      * The short edge of the display, in px, as measured from the window the
      * platform lays out for the first show; zero until measured.
      *
@@ -547,6 +569,15 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     private val replyLines = (0 until REPLY_MAX_LINES).map { _ -> TextView(context) }
 
     /**
+     * The underline that blinks under a reply that is still arriving.
+     *
+     * It is a childless `LinearLayout`, the same measuring trick the ruler and
+     * the foot use - see [CARET_HEIGHT] for why the ink is a bar and how the
+     * blink is driven.
+     */
+    private val caret = LinearLayout(context)
+
+    /**
      * The children that pin the card to a fixed size, the rows the bubbles sit
      * in, and the shapes that round them.
      *
@@ -578,6 +609,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     private var userShape = rounded(WAKE_USER_BUBBLE, USER_RADIUS)
     private var replyShape = rounded(WAKE_REPLY_BUBBLE, REPLY_RADIUS)
     private var dividerShape = rounded(WAKE_DIVIDER, 0f)
+    private var caretShape = rounded(GRUVBOX_PRIMARY, CARET_HEIGHT / 2f)
     private var chipListening = rounded(WAKE_PHASE_LISTENING, CHIP_SIZE / 2f)
     private var chipThinking = rounded(WAKE_PHASE_THINKING, CHIP_SIZE / 2f)
     private var chipAnswering = rounded(WAKE_PHASE_ANSWERING, CHIP_SIZE / 2f)
@@ -590,7 +622,8 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
      * taken here rather than read where the views are built. A rise frame only
      * advances the climb; every other state settles the card at its resting
      * height, so an exchange that is interrupted mid-climb still ends in the
-     * same place.
+     * same place. The blink counter advances on every show, whatever the state,
+     * so the caret's phase keeps running even when nothing draws it.
      */
     override fun onPrepareShow(args: android.os.Bundle, showFlags: Int) {
         state = args.getString(SESSION_STATE_KEY) ?: ""
@@ -601,6 +634,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         } else {
             riseFrame = RISE_FRAMES
         }
+        caretFrame++
         rescale()
         userShown = wrap(request, USER_MAX_LINES)
         replyShown = wrap(reply, REPLY_MAX_LINES)
@@ -733,6 +767,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         userShape = rounded(WAKE_USER_BUBBLE, pt(USER_RADIUS))
         replyShape = rounded(WAKE_REPLY_BUBBLE, pt(REPLY_RADIUS))
         dividerShape = rounded(WAKE_DIVIDER, 0f)
+        caretShape = rounded(GRUVBOX_PRIMARY, pt(CARET_HEIGHT / 2f))
         chipListening = rounded(WAKE_PHASE_LISTENING, pt(CHIP_SIZE / 2f))
         chipThinking = rounded(WAKE_PHASE_THINKING, pt(CHIP_SIZE / 2f))
         chipAnswering = rounded(WAKE_PHASE_ANSWERING, pt(CHIP_SIZE / 2f))
@@ -782,6 +817,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         panel.background = clearShape
         phaseChip.background = clearShape
         divider.background = clearShape
+        caret.background = clearShape
         statusLine.setTextColor(TRANSPARENT)
         userBubble.background = clearShape
         replyBubble.background = clearShape
@@ -840,6 +876,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
             line.setGravity(Gravity.RIGHT)
             line.setTextColor(GRUVBOX_PRIMARY)
         }
+        replyBubble.addView(caret)
         metrics()
         if (measuring) clearCard() else paint()
         return stage
@@ -873,6 +910,10 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         userBubble.setPadding(userPad, userPad, userPad, userPad + if (request.isBlank()) 0 else px(BUBBLE_GAP))
         val replyPad = if (reply.isBlank()) 0 else px(BUBBLE_PADDING)
         replyBubble.setPadding(replyPad, replyPad, replyPad, replyPad)
+        val caretPad = if (reply.isBlank()) 0 else px(CARET_HEIGHT / 2)
+        caret.setPadding(0, caretPad, 0, caretPad)
+        caret.background =
+            if (state == SESSION_STATE_STREAMING && caretFrame % 2 == 0) caretShape else clearShape
         userShown.forEachIndexed { index, line ->
             if (index < userLines.size) userLines[index].text = line
         }
@@ -898,7 +939,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
             else px(BUBBLE_PADDING) * 2 + userLineCount * px(LINE_HEIGHT) + px(BUBBLE_GAP)
         val answer =
             if (replyLineCount == 0) 0
-            else px(BUBBLE_PADDING) * 2 + replyLineCount * px(LINE_HEIGHT)
+            else px(BUBBLE_PADDING) * 2 + replyLineCount * px(LINE_HEIGHT) + px(CARET_HEIGHT)
         // The rule measures to its own padding whatever it paints, so it always
         // costs the card this much room.
         return px(CARD_TOP_PADDING) + px(CARD_BOTTOM_PADDING) + status + px(DIVIDER_HEIGHT) + user + answer
