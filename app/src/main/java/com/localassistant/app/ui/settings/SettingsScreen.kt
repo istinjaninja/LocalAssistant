@@ -235,6 +235,26 @@ fun SettingsScreen(onNavigateBack: () -> Unit, viewModel: SettingsViewModel = vi
                 viewModel.fetchModelsForEndpoint("tts")
             }
 
+            if (settings.endpointsUnconfigured) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "Endpoints not configured",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Text(
+                            text = "The LLM, STT and TTS addresses still hold the placeholders this app ships with, so nothing will answer yet. Set the three Base URL fields to your own servers.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+            }
+
             SettingsSection("LLM (Language Model)", "🧠", "Large language model endpoint configuration") {
                 SettingTextField("Base URL", settings.llmBaseUrl, { viewModel.updateSetting("llmBaseUrl", it) }, "http://192.168.1.2:8080/v1")
                 EndpointStatusLine(llmStatus, llmBusy || llmTesting)

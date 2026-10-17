@@ -1,13 +1,21 @@
 package com.localassistant.app.domain.model
 
+// The shipped endpoints name nothing from any developer's network. A fresh install must
+// look obviously unconfigured rather than like a dead address that happens to belong to
+// someone else, so these placeholders are local and the Settings screen asks for real
+// ones while they are still in place.
+const val DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8086/v1"
+const val DEFAULT_STT_BASE_URL = "http://127.0.0.1:8088/v1"
+const val DEFAULT_TTS_BASE_URL = "http://127.0.0.1:8089/v1"
+
 /**
  * Application settings for the Local Assistant.
- * 
+ *
  * All values are persisted via SharedPreferences (see SettingsRepository) and can be configured by the user.
  */
 data class AppSettings(
     // LLM Configuration
-    val llmBaseUrl: String = "http://192.168.69.200:8086/v1",
+    val llmBaseUrl: String = DEFAULT_LLM_BASE_URL,
     val llmModelName: String = "/models/Qwen3.5-4B-Q4_K_M.gguf",
     val llmApiKey: String = "",
     // Generation budget. A reasoning model spends its tokens on the chain of
@@ -22,12 +30,12 @@ data class AppSettings(
     val llmChatTemplateKwargs: String = "",
 
     // STT Configuration
-    val sttBaseUrl: String = "http://192.168.69.200:8089/v1",
+    val sttBaseUrl: String = DEFAULT_STT_BASE_URL,
     val sttModelName: String = "ggml-medium.bin",
     val sttApiKey: String = "",
 
     // TTS Configuration
-    val ttsBaseUrl: String = "http://192.168.69.200:8089/v1",
+    val ttsBaseUrl: String = DEFAULT_TTS_BASE_URL,
     val ttsModelName: String = "qwen-talker-1.7b-customvoice-Q4_K_M.gguf",
     val ttsVoiceName: String = "serena",
     val ttsApiKey: String = "",
@@ -77,4 +85,14 @@ data class AppSettings(
 
     // Localization
     val preferredLocale: String = "" // empty = use system default
-)
+) {
+    /**
+     * True while every base URL is still the shipped placeholder. Nothing can work in that
+     * state, so the Settings screen shows a "configure endpoints" prompt instead of letting
+     * a plausible-looking local address fail silently.
+     */
+    val endpointsUnconfigured: Boolean
+        get() = llmBaseUrl == DEFAULT_LLM_BASE_URL &&
+            sttBaseUrl == DEFAULT_STT_BASE_URL &&
+            ttsBaseUrl == DEFAULT_TTS_BASE_URL
+}
