@@ -6,22 +6,32 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
+/**
+ * Wrapping a shared palette token in a Compose colour.
+ *
+ * The palette is stored as plain ARGB integers (see [Palette]) because the wake
+ * card is drawn by the system, which has no Compose to ask for a colour object.
+ * The mask is what keeps a negative Int from sign-extending into the alpha when
+ * it widens to the ULong this constructor wants.
+ */
+private fun paint(argb: Int): Color = Color((argb.toLong() and 0x00000000FFFFFFFFL).toULong())
+
 // Gruvbox Dark colors (gray background variant, dark mode, Gruvbox accents preserved)
-private val GruvboxDarkPrimary = Color(0xFFF2A94C)   // Warm yellow/orange (Gruvbox accent)
-private val GruvboxDarkSecondary = Color(0xFFD75D00)  // Deep orange (Gruvbox accent)
-private val GruvboxDarkTertiary = Color(0xFFCC8836)   // Golden brown (Gruvbox accent)
-private val GruvboxDarkBackground = Color(0xFF2B2B2B) // Neutral dark gray
-private val GruvboxDarkSurface = Color(0xFF333333)    // Neutral gray
-private val GruvboxDarkSurfaceLow = Color(0xFF2D2D2D) // Slightly darker gray
-private val GruvboxDarkSurfaceMed = Color(0xFF3A3A3A) // Surface medium gray
-private val GruvboxDarkSurfaceHigh = Color(0xFF444444) // Elevated gray
+private val GruvboxDarkPrimary = paint(GRUVBOX_PRIMARY)
+private val GruvboxDarkSecondary = paint(GRUVBOX_SECONDARY)
+private val GruvboxDarkTertiary = paint(GRUVBOX_TERTIARY)
+private val GruvboxDarkBackground = paint(GRUVBOX_BACKGROUND)
+private val GruvboxDarkSurface = paint(GRUVBOX_SURFACE)
+private val GruvboxDarkSurfaceLow = paint(GRUVBOX_SURFACE_LOW)
+private val GruvboxDarkSurfaceMed = paint(GRUVBOX_SURFACE_MED)
+private val GruvboxDarkSurfaceHigh = paint(GRUVBOX_SURFACE_HIGH)
 
 // Gruvbox Light colors (fallback palette)
-private val GruvboxLightPrimary = Color(0xFFB57617)   // Golden brown
-private val GruvboxLightSecondary = Color(0xFF8F6300)  // Darker orange
-private val GruvboxLightTertiary = Color(0xFFA47D52)   // Warm gray-brown
-private val GruvboxLightBackground = Color(0xFFFDF6E3) // Cream/beige
-private val GruvboxLightSurface = Color(0xFFFBF1DE)    // Lighter cream
+private val GruvboxLightPrimary = paint(GRUVBOX_LIGHT_PRIMARY)
+private val GruvboxLightSecondary = paint(GRUVBOX_LIGHT_SECONDARY)
+private val GruvboxLightTertiary = paint(GRUVBOX_LIGHT_TERTIARY)
+private val GruvboxLightBackground = paint(GRUVBOX_LIGHT_BACKGROUND)
+private val GruvboxLightSurface = paint(GRUVBOX_LIGHT_SURFACE)
 
 /**
  * Gruvbox Dark color scheme.
@@ -29,29 +39,29 @@ private val GruvboxLightSurface = Color(0xFFFBF1DE)    // Lighter cream
 val GruvboxDarkColorScheme = darkColorScheme(
     primary = GruvboxDarkPrimary,
     onPrimary = GruvboxDarkBackground,
-    primaryContainer = Color(0xFFD48A30),
+    primaryContainer = paint(GRUVBOX_PRIMARY_CONTAINER),
     onPrimaryContainer = GruvboxDarkBackground,
 
     secondary = GruvboxDarkSecondary,
     onSecondary = GruvboxDarkBackground,
-    secondaryContainer = Color(0xFFB54E00),
+    secondaryContainer = paint(GRUVBOX_SECONDARY_CONTAINER),
     onSecondaryContainer = GruvboxDarkBackground,
 
     tertiary = GruvboxDarkTertiary,
     onTertiary = GruvboxDarkSurface,
-    tertiaryContainer = Color(0xFFA86C1A),
+    tertiaryContainer = paint(GRUVBOX_TERTIARY_CONTAINER),
     onTertiaryContainer = GruvboxDarkSurface,
 
     background = GruvboxDarkBackground,
-    onBackground = Color(0xFFE8E8E8),
+    onBackground = paint(GRUVBOX_ON_BACKGROUND),
 
     surface = GruvboxDarkSurface,
-    onSurface = Color(0xFFE8E8E8),  // Light gray for text on dark gray surfaces
+    onSurface = paint(GRUVBOX_ON_SURFACE),
 
     surfaceVariant = GruvboxDarkSurfaceLow,
-    onSurfaceVariant = Color(0xFFABABAB),
+    onSurfaceVariant = paint(GRUVBOX_ON_SURFACE_MUTED),
 
-    error = Color(0xFFCC3D2B),      // Red-orange for errors (Gruvbox style)
+    error = paint(GRUVBOX_ERROR),
     onError = GruvboxDarkBackground,
 
     surfaceDim = GruvboxDarkSurfaceLow,
@@ -59,7 +69,7 @@ val GruvboxDarkColorScheme = darkColorScheme(
     surfaceContainerLow = GruvboxDarkSurfaceLow,
     surfaceContainer = GruvboxDarkSurfaceMed,
     surfaceContainerHigh = GruvboxDarkSurfaceHigh,
-    surfaceContainerHighest = Color(0xFF4F4F4F),
+    surfaceContainerHighest = paint(GRUVBOX_SURFACE_HIGHEST),
 )
 
 /**
@@ -67,38 +77,38 @@ val GruvboxDarkColorScheme = darkColorScheme(
  */
 val GruvboxLightColorScheme = lightColorScheme(
     primary = GruvboxLightPrimary,
-    onPrimary = GruvboxDarkSurface,
-    primaryContainer = Color(0xFFD7A66E),
-    onPrimaryContainer = GruvboxDarkSurface,
+    onPrimary = paint(GRUVBOX_LIGHT_ON_PRIMARY),
+    primaryContainer = paint(GRUVBOX_LIGHT_PRIMARY_CONTAINER),
+    onPrimaryContainer = paint(GRUVBOX_LIGHT_ON_PRIMARY),
 
     secondary = GruvboxLightSecondary,
-    onSecondary = GruvboxLightSurface,
-    secondaryContainer = Color(0xFFE8B878),
-    onSecondaryContainer = GruvboxDarkSurface,
+    onSecondary = paint(GRUVBOX_LIGHT_ON_SECONDARY),
+    secondaryContainer = paint(GRUVBOX_LIGHT_SECONDARY_CONTAINER),
+    onSecondaryContainer = paint(GRUVBOX_LIGHT_ON_PRIMARY),
 
     tertiary = GruvboxLightTertiary,
-    onTertiary = GruvboxLightSurface,
-    tertiaryContainer = Color(0xFFD4A673),
-    onTertiaryContainer = GruvboxDarkSurface,
+    onTertiary = paint(GRUVBOX_LIGHT_ON_TERTIARY),
+    tertiaryContainer = paint(GRUVBOX_LIGHT_TERTIARY_CONTAINER),
+    onTertiaryContainer = paint(GRUVBOX_LIGHT_ON_PRIMARY),
 
     background = GruvboxLightBackground,
-    onBackground = GruvboxDarkSurface,
+    onBackground = paint(GRUVBOX_LIGHT_ON_BACKGROUND),
 
     surface = GruvboxLightSurface,
-    onSurface = GruvboxDarkSurface,
+    onSurface = paint(GRUVBOX_LIGHT_ON_BACKGROUND),
 
-    surfaceVariant = Color(0xFFF2E8D5),
+    surfaceVariant = paint(GRUVBOX_LIGHT_SURFACE_VARIANT),
     onSurfaceVariant = GruvboxLightTertiary,
 
-    error = Color(0xFFAF3A1B),      // Red-orange for errors (Gruvbox style)
+    error = paint(GRUVBOX_LIGHT_ERROR),
     onError = GruvboxLightSurface,
 
-    surfaceDim = Color(0xFFEFE2CC),
+    surfaceDim = paint(GRUVBOX_LIGHT_SURFACE_DIM),
     surfaceBright = GruvboxLightSurface,
-    surfaceContainerLow = Color(0xFFF5E9D4),
-    surfaceContainer = Color(0xFFF2E8D5),
-    surfaceContainerHigh = Color(0xFFECE1CB),
-    surfaceContainerHighest = Color(0xFFE8D9C1),
+    surfaceContainerLow = paint(GRUVBOX_LIGHT_SURFACE_CONTAINER_LOW),
+    surfaceContainer = paint(GRUVBOX_LIGHT_SURFACE_CONTAINER),
+    surfaceContainerHigh = paint(GRUVBOX_LIGHT_SURFACE_CONTAINER_HIGH),
+    surfaceContainerHighest = paint(GRUVBOX_LIGHT_SURFACE_CONTAINER_HIGHEST),
 )
 
 /**

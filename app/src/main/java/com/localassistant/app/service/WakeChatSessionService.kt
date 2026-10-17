@@ -10,6 +10,17 @@ import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.localassistant.app.ui.theme.TRANSPARENT
+import com.localassistant.app.ui.theme.GRUVBOX_ON_SURFACE
+import com.localassistant.app.ui.theme.GRUVBOX_ON_SURFACE_MUTED
+import com.localassistant.app.ui.theme.GRUVBOX_PRIMARY
+import com.localassistant.app.ui.theme.GRUVBOX_ERROR
+import com.localassistant.app.ui.theme.WAKE_CARD_SURFACE
+import com.localassistant.app.ui.theme.WAKE_USER_BUBBLE
+import com.localassistant.app.ui.theme.WAKE_REPLY_BUBBLE
+import com.localassistant.app.ui.theme.WAKE_PHASE_LISTENING
+import com.localassistant.app.ui.theme.WAKE_PHASE_THINKING
+import com.localassistant.app.ui.theme.WAKE_PHASE_ANSWERING
 
 /**
  * The key the wake service uses to hand the user's request to a session.
@@ -65,44 +76,20 @@ const val SESSION_STATE_SPEAKING = "speaking"
  */
 const val SESSION_STATE_CLOSE = "close"
 
-/**
- * The card colours, matching the app's Gruvbox dark scheme. A session is drawn
- * by the system, so it cannot read [Theme] and has to name them itself.
+/*
+ * The card's colours come from the shared palette module (see the imports above),
+ * which is the one set of Gruvbox tokens both halves of the app name.
  *
- * The surface is translucent rather than solid: the window is transparent and
- * the platform paints nothing behind the card, so the screen the device is
+ * A session is drawn by the system, so it cannot read a Compose MaterialTheme -
+ * that is why the palette lives as plain ARGB integers rather than as the colour
+ * roles [Theme] builds, and why this file can depend on it without carrying any
+ * Compose into a process that must not have any.
+ *
+ * The card surface is translucent rather than solid: the window is transparent
+ * and the platform paints nothing behind the card, so the screen the device is
  * showing reads through it and the exchange stays a floating chat card instead
  * of a panel over the display.
  */
-private const val TRANSPARENT = 0x00000000
-
-private const val SURFACE = 0xE6141414.toInt()
-
-private const val MUTED = 0xFFAAAAAA.toInt()
-
-private const val USER_TEXT = 0xFFE8E8E8.toInt()
-
-private const val REPLY_TEXT = 0xFFF2A94C.toInt()
-
-private const val USER_BUBBLE = 0xFF3A3A3A.toInt()
-
-private const val REPLY_BUBBLE = 0xFF342A1F.toInt()
-
-/**
- * The colour of the dot beside the status line, which is the exchange's phase
- * wearing the colour it is doing in.
- *
- * The dot is what makes the status line readable at a glance across a room: the
- * label needs the eye to be on the card, the colour does not. A state the wake
- * service does not name is taken as a fault and wears [ERROR].
- */
-private const val DOT_LISTENING = 0xFF67B744.toInt()
-
-private const val DOT_THINKING = 0xFFEF7E3B.toInt()
-
-private const val DOT_ANSWERING = 0xFFF2A94C.toInt()
-
-private const val ERROR = 0xFFCC3D2B.toInt()
 
 /**
  * How big the card is.
@@ -475,10 +462,10 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     private val statusRow = LinearLayout(context)
     private val userRow = LinearLayout(context)
     private val replyRow = LinearLayout(context)
-    private val cardShape = rounded(SURFACE, CARD_RADIUS)
+    private val cardShape = rounded(WAKE_CARD_SURFACE, CARD_RADIUS)
     private val clearShape = rounded(TRANSPARENT, CARD_RADIUS)
-    private val userShape = rounded(USER_BUBBLE, BUBBLE_RADIUS)
-    private val replyShape = rounded(REPLY_BUBBLE, BUBBLE_RADIUS)
+    private val userShape = rounded(WAKE_USER_BUBBLE, BUBBLE_RADIUS)
+    private val replyShape = rounded(WAKE_REPLY_BUBBLE, BUBBLE_RADIUS)
 
     /**
      * Records what the platform is about to show.
@@ -602,7 +589,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
             userBubble.addView(line)
             line.setGravity(Gravity.LEFT)
             line.textSize = TEXT_SIZE
-            line.setTextColor(USER_TEXT)
+            line.setTextColor(GRUVBOX_ON_SURFACE)
         }
         panel.addView(replyRow)
         replyRow.setGravity(Gravity.TOP or Gravity.RIGHT)
@@ -613,7 +600,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
             replyBubble.addView(line)
             line.setGravity(Gravity.RIGHT)
             line.textSize = TEXT_SIZE
-            line.setTextColor(REPLY_TEXT)
+            line.setTextColor(GRUVBOX_PRIMARY)
         }
         paint()
         return stage
@@ -639,7 +626,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         statusDot.text = if (closed) "" else PHASE_DOT
         statusDot.setTextColor(if (closed) TRANSPARENT else phaseColor())
         statusLine.text = if (closed) "" else statusLabel()
-        statusLine.setTextColor(if (closed) TRANSPARENT else MUTED)
+        statusLine.setTextColor(if (closed) TRANSPARENT else GRUVBOX_ON_SURFACE_MUTED)
         userBubble.background = if (request.isBlank()) clearShape else userShape
         replyBubble.background = if (reply.isBlank()) clearShape else replyShape
         val userPad = if (request.isBlank()) 0 else BUBBLE_PADDING
@@ -698,16 +685,16 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
      * The colour of the status dot, which is the exchange's phase wearing the
      * colour it is doing in.
      *
-     * Only the dot wears it: the label beside it stays [MUTED], so the phase is
+     * Only the dot wears it: the label beside it stays [GRUVBOX_ON_SURFACE_MUTED], so the phase is
      * legible from across a room by colour alone while the words stay quiet
      * instead of shouting the state. A state the wake service does not name is
-     * taken as a fault and wears [ERROR].
+     * taken as a fault and wears [GRUVBOX_ERROR].
      */
     private fun phaseColor(): Int = when (state) {
-        SESSION_STATE_LISTENING -> DOT_LISTENING
-        SESSION_STATE_REQUEST -> DOT_THINKING
-        SESSION_STATE_STREAMING, SESSION_STATE_SPEAKING, SESSION_STATE_REPLY -> DOT_ANSWERING
-        else -> ERROR
+        SESSION_STATE_LISTENING -> WAKE_PHASE_LISTENING
+        SESSION_STATE_REQUEST -> WAKE_PHASE_THINKING
+        SESSION_STATE_STREAMING, SESSION_STATE_SPEAKING, SESSION_STATE_REPLY -> WAKE_PHASE_ANSWERING
+        else -> GRUVBOX_ERROR
     }
 
     /**
