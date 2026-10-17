@@ -80,6 +80,16 @@ const val GRUVBOX_LIGHT_SURFACE_CONTAINER_HIGHEST = 0xFFE8D9C1.toInt()
 const val WAKE_CARD_SURFACE = 0xE6141414.toInt()
 
 /**
+ * The layer the card rests on - the ring of ink that reads as elevation.
+ *
+ * A session has no shadow API: a widget carries one background and
+ * [GradientDrawable] takes no stroke. Depth is therefore layered translucency -
+ * a faint, wider layer under the card surface, so the card reads as one sheet
+ * lifted off the screen rather than a flat cut-out of it.
+ */
+const val WAKE_CARD_ELEVATION = 0x59000000.toInt()
+
+/**
  * The bubble the user's half of the exchange wears - the medium gray surface,
  * lifted off the card so the two turns read as separate bubbles rather than two
  * blocks of ink on one panel.

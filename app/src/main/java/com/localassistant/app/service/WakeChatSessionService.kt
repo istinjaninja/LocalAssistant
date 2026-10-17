@@ -16,6 +16,7 @@ import com.localassistant.app.ui.theme.GRUVBOX_ON_SURFACE_MUTED
 import com.localassistant.app.ui.theme.GRUVBOX_PRIMARY
 import com.localassistant.app.ui.theme.GRUVBOX_ERROR
 import com.localassistant.app.ui.theme.WAKE_CARD_SURFACE
+import com.localassistant.app.ui.theme.WAKE_CARD_ELEVATION
 import com.localassistant.app.ui.theme.WAKE_USER_BUBBLE
 import com.localassistant.app.ui.theme.WAKE_REPLY_BUBBLE
 import com.localassistant.app.ui.theme.WAKE_PHASE_LISTENING
@@ -212,14 +213,25 @@ private const val WINDOW_OVERHEAD = 96
 /**
  * How far the card floats above the bottom edge of the display.
  *
- * It is zero, and the card sits flush against the bottom edge: the window is
- * pinned there and the card is stretched to fill it, so the only way to leave a
- * margin under the card was the padding-on-an-empty-View trick - and measured, a
- * bare [android.view.View] carrying top padding reports **0** height, so the
- * trick does nothing here. The card climbing straight out of the bottom edge is
- * what the rise reads as anyway.
+ * The window is pinned to the bottom edge, so the room under the card is not the
+ * window's - it is the stage's own. A bare [android.view.View] carrying padding
+ * measures **0** height, which is why the earlier build sat flush against the
+ * edge; a `LinearLayout` with no children and top padding does measure to that
+ * padding - the same honoured trick the ruler uses for width - so the inset is a
+ * `foot` under the card. It is what keeps the card clear of the gesture bar,
+ * which the earlier build drew straight through the bottom of the card.
  */
-private const val BOTTOM_MARGIN = 0
+private const val BOTTOM_MARGIN = 56
+
+/**
+ * How wide the layer of ink under the card is, which is what reads as elevation.
+ *
+ * A session has no shadow API and [GradientDrawable] takes no stroke, so depth is
+ * layered translucency: the card wears a faint, wider layer and the panel sits on
+ * top of it, which reads as a sheet lifted off the screen rather than a flat
+ * cut-out of it.
+ */
+private const val CARD_ELEVATION = 10
 
 /**
  * The width the card's children may use, which is what a line of text and a
@@ -497,6 +509,14 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
      */
     private val stage = LinearLayout(context)
     private val card = LinearLayout(context)
+
+    /**
+     * The empty strip under the card that keeps it off the bottom edge.
+     *
+     * It measures to its own top padding and paints nothing, which is the same
+     * honoured trick the ruler uses for width - see [BOTTOM_MARGIN].
+     */
+    private val foot = LinearLayout(context)
     private val panel = LinearLayout(context)
     private val statusLine = TextView(context)
     private val statusDot = TextView(context)
@@ -531,6 +551,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     private val userRow = LinearLayout(context)
     private val replyRow = LinearLayout(context)
     private var cardShape = rounded(WAKE_CARD_SURFACE, CARD_RADIUS)
+    private var elevationShape = rounded(WAKE_CARD_ELEVATION, CARD_RADIUS + CARD_ELEVATION)
     private val clearShape = rounded(TRANSPARENT, CARD_RADIUS)
     private var userShape = rounded(WAKE_USER_BUBBLE, BUBBLE_RADIUS)
     private var replyShape = rounded(WAKE_REPLY_BUBBLE, BUBBLE_RADIUS)
@@ -594,15 +615,16 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         val wanted = if (needed > risen) needed else risen
         val limit = px(MAX_CARD_HEIGHT)
         val tall = if (wanted > limit) limit else wanted
-        val cut = tall + WINDOW_OVERHEAD + BOTTOM_MARGIN
-        val ceiling = px(MAX_WINDOW_HEIGHT)
+        val ring = px(CARD_ELEVATION) * 2
+        val cut = tall + WINDOW_OVERHEAD + ring + px(BOTTOM_MARGIN)
+        val ceiling = px(MAX_WINDOW_HEIGHT) + ring
         val height = if (cut > ceiling) ceiling else cut
-        surface.setLayout(px(CARD_OUTER_WIDTH), height)
+        surface.setLayout(px(CARD_OUTER_WIDTH) + ring, height)
         surface.setGravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         surface.setBackgroundDrawable(clearShape)
         Log.i(
             "WakeChatSessionService",
-            "Cut the window to ${px(CARD_OUTER_WIDTH)} by ${height} for a ${tall}-tall card at frame ${riseFrame} (scale $scale)"
+            "Cut the window to ${px(CARD_OUTER_WIDTH) + ring} by ${height} for a ${tall}-tall card at frame ${riseFrame} (scale $scale)"
         )
     }
 
@@ -680,6 +702,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         if (target == scale) return
         scale = target
         cardShape = rounded(WAKE_CARD_SURFACE, pt(CARD_RADIUS))
+        elevationShape = rounded(WAKE_CARD_ELEVATION, pt(CARD_RADIUS + CARD_ELEVATION))
         userShape = rounded(WAKE_USER_BUBBLE, pt(BUBBLE_RADIUS))
         replyShape = rounded(WAKE_REPLY_BUBBLE, pt(BUBBLE_RADIUS))
         Log.i(
@@ -700,6 +723,8 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     private fun metrics() {
         panel.setPadding(px(CARD_SIDE_PADDING), px(CARD_TOP_PADDING), px(CARD_SIDE_PADDING), px(CARD_BOTTOM_PADDING))
         ruler.setPadding(px(CARD_WIDTH) / 2, 0, px(CARD_WIDTH) / 2, 0)
+        foot.setPadding(0, px(BOTTOM_MARGIN), 0, 0)
+        card.setPadding(px(CARD_ELEVATION), px(CARD_ELEVATION), px(CARD_ELEVATION), px(CARD_ELEVATION))
         statusRow.setPadding(0, 0, 0, px(BUBBLE_GAP))
         statusDot.textSize = pt(STATUS_SIZE)
         statusDot.setPadding(0, 0, px(STATUS_DOT_GAP), 0)
@@ -721,6 +746,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         statusLine.text = ""
         userLines.forEach { line -> line.text = "" }
         replyLines.forEach { line -> line.text = "" }
+        card.background = clearShape
         panel.background = clearShape
         statusDot.setTextColor(TRANSPARENT)
         statusLine.setTextColor(TRANSPARENT)
@@ -751,6 +777,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         stage.setGravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         stage.setOrientation(VERTICAL)
         stage.addView(card)
+        stage.addView(foot)
         card.setGravity(Gravity.TOP or Gravity.CENTER_HORIZONTAL)
         card.setOrientation(VERTICAL)
         card.addView(panel)
@@ -800,6 +827,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         userLines.forEach { line -> line.text = "" }
         replyLines.forEach { line -> line.text = "" }
         val closed = state == SESSION_STATE_CLOSE
+        card.background = if (closed) clearShape else elevationShape
         panel.background = if (closed) clearShape else cardShape
         statusDot.text = if (closed) "" else PHASE_DOT
         statusDot.setTextColor(if (closed) TRANSPARENT else phaseColor())
