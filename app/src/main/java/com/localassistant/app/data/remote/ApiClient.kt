@@ -20,6 +20,77 @@ object ApiClient {
     private const val DEFAULT_TIMEOUT = 60L // seconds
     
     /**
+     * Runs a whole tool exchange: ask, run what the model asked for, answer again, and keep
+     * going until the model replies with words instead of calls.
+     *
+     * Both the in-app pipeline and the hands-free wake chat route through here, so a tool
+     * answer reads back the same way wherever the conversation lives. With an empty [tools]
+     * list this is one ordinary completion: [runTool] is never consulted.
+     *
+     * @param runTool called with a tool's name and raw JSON arguments, returning what the model
+     *               should read back; a null executor answers the first turn and stops.
+     * @param onChunk forwarded to every round, so streaming survives the loop.
+     * @throws IOException from a round that failed, including a cancelled stream.
+     */
+    suspend fun chatCompletionWithTools(
+        baseUrl: String,
+        apiKey: String? = null,
+        messages: List<Map<String,String>>,
+        model: String,
+        temperature: Float = 7.0f,
+        maxTokens: Int = 1024,
+        systemPrompt: String? = null,
+        stream: Boolean = true,
+        reasoningBudgetTokens: Int = 0,
+        chatTemplateKwargs: String = "",
+        timeoutSeconds: Long = DEFAULT_TIMEOUT,
+        tools: List<ToolSchema> = emptyList(),
+        runTool: (suspend (String, String) -> String)? = null,
+        abortSignal: AtomicBoolean? = null,
+        onChunk: ((String) -> Unit)? = null
+    ): ChatResponse {
+        // A model that keeps asking for tools would loop forever, so the exchange has a budget.
+        val maxToolRounds = 5
+        val history = mutableListOf<Map<String,String>>()
+        history.addAll(messages)
+        var reply = ChatResponse(content = "")
+        for (round in 1..maxToolRounds) {
+            reply = chatCompletion(
+                baseUrl = baseUrl,
+                apiKey = apiKey,
+                messages = history,
+                model = model,
+                temperature = temperature,
+                maxTokens = maxTokens,
+                stream = stream,
+                reasoningBudgetTokens = reasoningBudgetTokens,
+                chatTemplateKwargs = chatTemplateKwargs,
+                timeoutSeconds = timeoutSeconds,
+                tools = tools,
+                abortSignal = abortSignal,
+                onChunk = onChunk
+            )
+            if (reply.toolCalls.isEmpty()) return reply
+            if (runTool == null) return reply
+            if (abortSignal?.get() == true) return reply
+            history.add(assistantToolCallTurn(reply))
+            for (call in reply.toolCalls) {
+                val outcome = runTool(call.name, call.arguments)
+                history.add(
+                    mapOf(
+                        "role" to "tool",
+                        "tool_call_id" to call.resolvedId,
+                        "content" to outcome
+                    )
+                )
+                android.util.Log.i("ApiClient", "Tool ${call.name} answered with ${outcome.take(160)}")
+            }
+        }
+        android.util.Log.w("ApiClient", "The model still asked for tools after $maxToolRounds rounds; the last words it sent are the answer.")
+        return reply
+    }
+
+    /**
      * Create an OkHttp client with the given base URL and optional API key.
      *
      * @param timeoutSeconds connect/read timeout; callers that only check whether an
@@ -51,9 +122,40 @@ object ApiClient {
      */
     data class ChatResponse(
         val content: String,
-        val reasoningContent: String? = null
+        val reasoningContent: String? = null,
+        // What the model asked to be run. It is answered in the same response so the
+        // caller can run it and ask again, and empty on every reply that is plain words.
+        val toolCalls: List<ToolCall> = emptyList()
     ) {
         val hasReasoning: Boolean get() = !reasoningContent.isNullOrEmpty()
+        val requestedTools: Boolean get() = toolCalls.isNotEmpty()
+    }
+
+    /**
+     * A tool the model may call, described in the shape every OpenAI-compatible server
+     * reads. [parametersJson] is the parameter document as text - the MCP client already
+     * has it, and re-typing it here would need a schema model in the client. An empty
+     * document means the tool takes no arguments.
+     */
+    data class ToolSchema(
+        val name: String,
+        val description: String = "",
+        val parametersJson: String = ""
+    )
+
+    /**
+     * One tool call the model asked for. [arguments] is the argument document exactly
+     * as the model wrote it; it is never parsed here, because what a tool does with its
+     * arguments is the tool's own decision.
+     */
+    data class ToolCall(
+        val id: String,
+        val name: String,
+        val arguments: String
+    ) {
+        // Servers that do not name a call still have to be answered with the same id the
+        // model will read back, so a stable one is filled in for the round trip.
+        val resolvedId: String get() = if (id.isNotBlank()) id else "call_${name}_${arguments.length}"
     }
     
     /**
@@ -79,6 +181,7 @@ object ApiClient {
         reasoningBudgetTokens: Int = 0,
         chatTemplateKwargs: String = "",
         timeoutSeconds: Long = DEFAULT_TIMEOUT,
+        tools: List<ToolSchema> = emptyList(),
         abortSignal: AtomicBoolean? = null,
         onChunk: ((String) -> Unit)? = null
     ): ChatResponse {
@@ -100,7 +203,8 @@ object ApiClient {
             maxTokens = maxTokens,
             stream = stream,
             reasoningBudgetTokens = reasoningBudgetTokens,
-            chatTemplateKwargs = chatTemplateKwargs
+            chatTemplateKwargs = chatTemplateKwargs,
+            tools = tools
         ).toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
             .url("$cleanUrl/chat/completions")
@@ -141,6 +245,8 @@ object ApiClient {
     fun parseReasoningAndContent(response: String): ChatResponse {
         var reasoning = ""
         var content = ""
+        // What the model asked to be run in this reply, if anything.
+        val requestedCalls = mutableListOf<ToolCall>()
         
         // Try to parse as nested JSON structure first (OpenAI format)
         try {
@@ -153,6 +259,23 @@ object ApiClient {
                 val message = firstChoice.getJSONObject("message")
                 
                 content = message.optString("content", "")
+
+                // A non-streaming reply that asked for tools carries the calls complete in the
+                // message, unlike the streamed response, where they arrive in pieces.
+                if (message.has("tool_calls")) {
+                    val calls = message.getJSONArray("tool_calls")
+                    for (i in 0..<calls.length()) {
+                        val call = calls.getJSONObject(i)
+                        val function = call.getJSONObject("function")
+                        requestedCalls.add(
+                            ToolCall(
+                                id = call.optString("id", ""),
+                                name = function.optString("name", ""),
+                                arguments = function.optString("arguments", "")
+                            )
+                        )
+                    }
+                }
                 
                 // Check for reasoning_content field (newer models)
                 if (message.has("reasoning_content") && !message.getString("reasoning_content").isNullOrEmpty()) {
@@ -202,7 +325,7 @@ object ApiClient {
             }
         }
         
-        return ChatResponse(content = content, reasoningContent = if (reasoning.isBlank()) null else reasoning)
+        return ChatResponse(content = content, reasoningContent = if (reasoning.isBlank()) null else reasoning, toolCalls = requestedCalls)
     }
     
     /**
@@ -313,11 +436,59 @@ object ApiClient {
         }
     }
     
+    /**
+     * The turn we hand back when the model asked for tools: the calls it made, verbatim, so the
+     * next round can see what it already asked for.
+     */
+    private fun assistantToolCallTurn(reply: ChatResponse): Map<String, String> {
+        val calls = mutableListOf<String>()
+        for (call in reply.toolCalls) {
+            calls.add(
+                "{\"id\": \"${call.resolvedId}\", \"type\": \"function\", \"function\": {\"name\": \"${call.name}\", \"arguments\": ${escapeJsonString(call.arguments)}}}"
+            )
+        }
+        return mapOf(
+            "role" to "assistant",
+            "content" to reply.content,
+            "tool_calls" to "[${calls.joinToString(", ")}]"
+        )
+    }
+
     private fun buildMessagesJson(messages: List<Map<String, String>>): String {
         val jsonList = messages.joinToString(",\n") { msg ->
-            """{"role": "${msg["role"]}", "content": ${escapeJsonString(msg["content"] ?: "")}}"""
+            val fields = mutableListOf(
+                "\"role\": \"${msg["role"] ?: "user"}\"",
+                "\"content\": ${escapeJsonString(msg["content"] ?: "")}"
+            )
+            // A tool round has to survive the next request unchanged: the assistant
+            // turn that asked for a tool carries the call array back verbatim, and the
+            // turn answering it names that call. Without both the server cannot see a
+            // completed round and refuses to call tools at all.
+            msg["tool_calls"]?.let { calls ->
+                if (calls.isNotBlank() && calls != "[]") fields.add("\"tool_calls\": $calls")
+            }
+            msg["tool_call_id"]?.let { callId ->
+                if (callId.isNotBlank()) fields.add("\"tool_call_id\": ${escapeJsonString(callId)}")
+            }
+            "{${fields.joinToString(", ")}}"
         }
         return "[$jsonList]"
+    }
+
+    /**
+     * Renders the tool schemas a request offers the model, in the shape every
+     * OpenAI-compatible server reads.
+     *
+     * [ToolSchema.parametersJson] is carried as raw JSON because a parameter document
+     * is an object of arbitrary depth: re-escaping it field by field would need a JSON
+     * writer in this client, and every producer here (the MCP client) already has the
+     * document as text. An absent document becomes the empty object schema, which is
+     * what a tool that takes no arguments needs.
+     */
+    private fun buildToolsJson(tools: List<ToolSchema>): String {
+        return tools.joinToString(",") { tool ->
+            """{"type": "function", "function": {"name": ${escapeJsonString(tool.name)}, "description": ${escapeJsonString(tool.description)}, "parameters": ${tool.parametersJson.ifBlank { """{"type": "object", "properties": {}}""" }}}}"""
+        }
     }
 
     /**
@@ -337,7 +508,8 @@ object ApiClient {
         maxTokens: Int,
         stream: Boolean,
         reasoningBudgetTokens: Int = 0,
-        chatTemplateKwargs: String = ""
+        chatTemplateKwargs: String = "",
+        tools: List<ToolSchema> = emptyList()
     ): String {
         val body = StringBuilder()
         body.append("{\n\"model\": ${escapeJsonString(model)},")
@@ -347,7 +519,12 @@ object ApiClient {
         body.append("\n\"stream\": $stream")
         // Optional generation controls are appended only when the user set them,
         // so a server that knows nothing about reasoning keeps receiving the plain
-        // request it accepted before.
+        // request it accepted before. The tool list is offered with an explicit
+        // "auto" choice: naming no tool forces a call, and omitting the choice
+        // leaves the behaviour to whatever the server happens to default to.
+        if (tools.isNotEmpty()) {
+            body.append(",\n\"tools\": ${buildToolsJson(tools)},\n\"tool_choice\": \"auto\"")
+        }
         if (reasoningBudgetTokens > 0) {
             body.append(",\n\"reasoning_budget_tokens\": $reasoningBudgetTokens")
         }
@@ -475,8 +652,12 @@ object ApiClient {
     ): ChatResponse {
         val contentBuilder = StringBuilder()
         val reasoningBuilder = StringBuilder()
+        // The raw JSON of every tool-call fragment the server sent, in order. A call is
+        // not one delta: the id and the function name arrive in the first fragment and
+        // the argument document arrives split over the rest, so the pieces are kept
+        // here and joined once the stream has ended - a half document cannot be run.
+        val callFragments = mutableListOf<String>()
         android.util.Log.d("ApiClient", "Starting SSE stream read")
-
         var lineCount = 0
         try {
             // Use buffered reader for proper streaming
@@ -518,6 +699,15 @@ object ApiClient {
                     } else if (jsonStr != "[DONE]") {
                         android.util.Log.w("ApiClient", "Empty chunk from JSON: $jsonStr")
                     }
+                    // A tool call is not one delta: the server opens it with the id and the
+                    // function name and then streams the argument document in pieces, so the
+                    // fragments are stitched here and only handed to the caller once the
+                    // stream has ended - a half-written argument document cannot be run.
+                    if (jsonStr.contains("tool_calls")) {
+                        for (fragment in toolCallFragmentJson(jsonStr)) {
+                            callFragments.add(fragment)
+                        }
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -534,12 +724,94 @@ object ApiClient {
         val parsed = parseReasoningAndContent(contentBuilder.toString())
         val streamedReasoning = reasoningBuilder.toString().trim()
         val reasoning = if (streamedReasoning.isNotEmpty()) streamedReasoning else parsed.reasoningContent.orEmpty().trim()
+        val toolCalls = completeToolCallFragments(callFragments)
+        if (toolCalls.isNotEmpty()) {
+            android.util.Log.i("ApiClient", "The model asked for ${toolCalls.size} tool(s): ${toolCalls.joinToString(", ") { it.name }}")
+        }
         android.util.Log.d("ApiClient", "Streaming completed, got ${parsed.content.length} chars")
         return ChatResponse(
             content = parsed.content,
-            reasoningContent = reasoning.takeIf { it.isNotEmpty() }
+            reasoningContent = reasoning.takeIf { it.isNotEmpty() },
+            toolCalls = toolCalls
         )
     }
+
+    /**
+     * The "tool_calls" fragments one SSE chunk carries, as raw JSON objects.
+     *
+     * They are handed over verbatim because one fragment is not one call: a call is
+     * spread over the chunks that follow it, and only [completeToolCallFragments] can
+     * tell where one call ends.
+     */
+    private fun toolCallFragmentJson(json: String): List<String> {
+        try {
+            val root = org.json.JSONObject(json)
+            if ((root.optJSONArray("choices")?.length() ?: 0) == 0) return emptyList()
+            val firstChoice = root.getJSONArray("choices").getJSONObject(0)
+            if (!firstChoice.has("delta")) return emptyList()
+            val calls = firstChoice.getJSONObject("delta").optJSONArray("tool_calls") ?: return emptyList()
+            val fragments = mutableListOf<String>()
+            for (position in 0 until calls.length()) {
+                fragments.add(calls.getJSONObject(position).toString())
+            }
+            return fragments
+        } catch (e: Exception) {
+            android.util.Log.w("ApiClient", "Could not read a tool-call fragment: ${e.message}")
+            return emptyList()
+        }
+    }
+
+    /**
+     * Joins the streamed fragments into whole calls.
+     *
+     * A fragment opens a call when it carries an id that has not been seen yet; every
+     * other fragment is the next piece of the argument document of the call most
+     * recently opened. That is the shape an OpenAI-compatible server writes, and it
+     * survives both the servers that repeat the id in each fragment and the ones that
+     * leave it out altogether.
+     */
+    private fun completeToolCallFragments(fragments: List<String>): List<ToolCall> {
+        val ids = mutableListOf<String>()
+        val names = mutableListOf<String>()
+        val arguments = mutableListOf<StringBuilder>()
+        for (fragment in fragments) {
+            try {
+                val node = org.json.JSONObject(fragment)
+                if (!node.has("function")) continue
+                val function = node.getJSONObject("function")
+                val id = node.optString("id", "")
+                val name = function.optString("name", "")
+                var seen = false
+                for (slot in 0 until ids.size) {
+                    if (id.isNotEmpty() && ids[slot] == id) {
+                        seen = true
+                        break
+                    }
+                }
+                if (!seen && (id.isNotEmpty() || ids.isEmpty())) {
+                    ids.add(id)
+                    names.add(name)
+                    arguments.add(StringBuilder())
+                }
+                if (arguments.isNotEmpty()) {
+                    arguments[arguments.size - 1].append(function.optString("arguments", ""))
+                    if (name.isNotEmpty() && names[names.size - 1].isEmpty()) {
+                        names[names.size - 1] = name
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("ApiClient", "Could not read a tool-call fragment: ${e.message}")
+            }
+        }
+        val calls = mutableListOf<ToolCall>()
+        for (slot in 0 until ids.size) {
+            if (names[slot].isNotEmpty()) {
+                calls.add(ToolCall(id = ids[slot], name = names[slot], arguments = arguments[slot].toString()))
+            }
+        }
+        return calls
+    }
+
     private fun extractContentFromJson(json: String): String {
         try {
             val root = org.json.JSONObject(json)
