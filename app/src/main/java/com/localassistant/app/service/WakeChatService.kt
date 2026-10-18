@@ -113,10 +113,18 @@ class WakeChatService : VoiceInteractionService() {
         // expensive and useless - the phrase is a beat long - so the ceiling is
         // what keeps the loop honest.
         private const val WAKE_CLIP_SECONDS = 10
-        // How long one frame of the card's climb from the bottom edge lasts. The
-        // number of frames is [RISE_FRAMES], the same count the session counts its
-        // climb in, so the two halves cannot drift apart.
-        private const val RISE_FRAME_MS = 70L
+        // How long one frame of the card's climb from the bottom edge lasts, and
+        // how many frames that climb is. The session is handed a position along the
+        // climb under SESSION_ANIM_KEY rather than a frame count, so these two live
+        // on this side alone and cannot drift out of step with the session; the round
+        // trip to the session's process per show is what bounds how many frames are
+        // worth asking for.
+        private const val RISE_FRAME_MS = 45L
+        private const val RISE_FRAMES = 9
+        // The same ladder run backwards when the exchange closes, so the card sinks
+        // and fades out the way it came in rather than blinking out.
+        private const val SINK_FRAME_MS = 45L
+        private const val SINK_FRAMES = 7
         // How often a reply that is still arriving is re-shown, so the answer
         // bubble grows with the stream without a round trip per token.
         private const val SESSION_REPAINT_MS = 300L
@@ -250,7 +258,9 @@ class WakeChatService : VoiceInteractionService() {
             // "listen", and startListening() is idempotent so the two cannot stack.
             ACTION_START, ACTION_VOICE_INTERACTION -> startListening()
             ACTION_STOP -> stopListening()
-            ACTION_CLOSE_CHAT -> endExchange()
+            // The sink is a run of delayed shows, so it runs off the notification
+            // thread exactly as the listening loop does.
+            ACTION_CLOSE_CHAT -> serviceScope.launch { endExchange() }
             ACTION_TRIGGER_EXCHANGE -> triggerExchange()
         }
 
@@ -386,7 +396,10 @@ class WakeChatService : VoiceInteractionService() {
         wakeInterruptSignal.set(false)
         // Stopping the service closes the chat, so its history goes with it -
         // a wake chat never carries a conversation into the next exchange.
-        endExchange()
+        // The sink is a run of delayed shows, so it runs on the scope this loop
+        // was already on, captured before the next exchange replaces it.
+        val scope = serviceScope
+        scope.launch { endExchange() }
         _phase.value = PHASE_IDLE
         serviceScope = newServiceScope()
         enrollmentDiagnosed = false
@@ -622,9 +635,10 @@ class WakeChatService : VoiceInteractionService() {
             // critical path, because the card is on screen from the first show.
             //
             // The climb up from the bottom edge is a run of shows rather than an
-            // animation, because a session has no animation API - see [RISE_FRAMES]
-            // in the session. The last show settles the card and is the one that
-            // carries the "I'm listening" text.
+            // animation, because a session has no animation API - see SESSION_ANIM_KEY
+            // in the session. Each show is handed how far through the climb it is, so
+            // the card translates up and fades in across them. The last show settles
+            // the card and is the one that carries the "I'm listening" text.
             raiseSessionWindow()
             requestSession(SESSION_STATE_LISTENING, "", "")
             // The chime still has to finish before the microphone starts, because
@@ -848,8 +862,9 @@ class WakeChatService : VoiceInteractionService() {
      * [VoiceInteractionSession.setContentView] are the only motion hooks and both
      * need an [android.animation.Animation], which this toolchain cannot name or
      * construct - so the climb is a run of shows and the session draws the card
-     * higher each time. [RISE_FRAMES] is the session's own frame count, so the
-     * number of shows here cannot drift from the number of positions there.
+     * higher each time. Each show is handed how far through the climb it is under
+     * [SESSION_ANIM_KEY], so the session owns the easing and the geometry and this
+     * service only supplies the progress; [RISE_FRAMES] lives here alone.
      *
      * The frames are short on purpose: each one is a round trip to the session's
      * process and the window is on screen from the first, so the user only sees
@@ -857,7 +872,11 @@ class WakeChatService : VoiceInteractionService() {
      */
     private suspend fun raiseSessionWindow() {
         for (frame in 0 until RISE_FRAMES) {
-            requestSession(SESSION_STATE_RISE, "", "")
+            requestSession(
+                SESSION_STATE_RISE,
+                "",
+                "",
+                (frame + 1) / RISE_FRAMES.toFloat())
             delay(RISE_FRAME_MS)
         }
     }
@@ -874,13 +893,21 @@ class WakeChatService : VoiceInteractionService() {
      * altogether, so a failure here is logged and the exchange still reaches the
      * user through the notification and TTS.
      */
-    private fun requestSession(state: String, request: String, reply: String) {
+    private fun requestSession(
+        state: String,
+        request: String,
+        reply: String,
+        progress: Float = 1f
+    ) {
         if (sessionFailures >= 3) return
         try {
             val args = android.os.Bundle()
             args.putString(SESSION_STATE_KEY, state)
             args.putString(SESSION_REQUEST_KEY, request)
             args.putString(SESSION_REPLY_KEY, reply)
+            // Only the climb and the sink read this: every other state is settled,
+            // and the default above says so without spelling 1.0 at every call site.
+            args.putString(SESSION_ANIM_KEY, progress.toString())
             android.util.Log.i("WakeChatService", "Asking the system to draw this exchange")
             showSession(args, 0)
             sessionFailures = 0
@@ -904,10 +931,25 @@ class WakeChatService : VoiceInteractionService() {
      * another process and only sees the bundles it is handed, so the end of the
      * exchange has to be sent to it as well - otherwise the card stays on the
      * home screen after the chat has been closed.
+     *
+     * The close is a run of shows rather than one, and each is handed a lower
+     * position along the climb, so the card sinks and fades out the way it came
+     * in instead of blinking out. The state is cleared first so nothing the user
+     * can act on survives the animation.
      */
-    fun endExchange() {
+    private suspend fun endExchange() {
         closeChat()
-        requestSession(SESSION_STATE_CLOSE, "", "")
+        for (frame in SINK_FRAMES - 1 downTo 0) {
+            requestSession(
+                SESSION_STATE_CLOSE,
+                "",
+                "",
+                (frame + 1) / SINK_FRAMES.toFloat())
+            delay(SINK_FRAME_MS)
+        }
+        // The card is fully sunk; this show is what releases the window, because
+        // it is the only one the session sees at zero height.
+        requestSession(SESSION_STATE_CLOSE, "", "", 0f)
     }
 
     /**

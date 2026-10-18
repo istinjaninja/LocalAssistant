@@ -46,9 +46,32 @@ const val SESSION_REPLY_KEY = "reply"
 const val SESSION_STATE_KEY = "state"
 
 /**
+ * The key the wake service uses to say how far through the card's climb or sink
+ * this show is, as text from "0" (at the bottom edge, no ink) to "1" (settled).
+ *
+ * There is no animation API to reach for: `View.startAnimation` and `View.setAnimation`
+ * exist but their argument type is `android.animation.Animation`, which this toolchain
+ * can neither name nor construct - `android.animation.Animation`, every
+ * `android.animatable.*` spelling and `android.app.Activity.loadAnimation` are
+ * unresolved, and the only members of `android.animation` that do resolve
+ * ([android.animation.Animator] and [android.animation.Keyframe]) are abstract
+ * classes with no constructor. Motion is therefore a sequence of shows, and this
+ * key is what turns that sequence into an animation rather than a handful of jumps:
+ * the wake service asks for the window many times in a row and hands each show a
+ * position along the curve, so the card translates up from the bottom edge and fades
+ * in, and the same ladder run backwards under [SESSION_STATE_CLOSE] sinks it.
+ *
+ * The wake service owns the timing and this file only ever reads a position, so the
+ * two halves cannot drift apart over a frame count they each hard-code. The position
+ * travels as text because every other key here is text and a session parses what it
+ * is handed.
+ */
+const val SESSION_ANIM_KEY = "anim"
+
+/**
  * The window is being raised and the card is still climbing from the bottom edge.
  *
- * The rise is a sequence of shows rather than an animation - see [RISE_FRAMES]
+ * The rise is a sequence of shows rather than an animation - see [SESSION_ANIM_KEY]
  * for why there is no animation API here - so the wake service asks for the
  * window several times in a row before the exchange itself has anything to show.
  */
@@ -385,35 +408,6 @@ private const val REPLY_MAX_LINES = 8
 private const val LINE_CHARS = 64
 
 /**
- * How the card climbs from the bottom edge, and for how many shows.
- *
- * There is no animation API here: `View.startAnimation` and `View.setAnimation`
- * exist but their argument type is `android.animation.Animation`, which this
- * toolchain can neither name nor construct - `android.animation.Animation`,
- * every `android.animatable.*` spelling and `android.app.Activity.loadAnimation`
- * are unresolved, and the only members of `android.animation` that do resolve
- * ([android.animation.Animator] and [android.animation.Keyframe]) are abstract
- * classes with no constructor. The motion is therefore a sequence of shows: the
- * wake service raises the window several times in a row and each show draws the
- * card a little higher, which reads as a slide up from the bottom edge.
- *
- * The climb runs **up** from the bottom edge to [CARD_HEIGHT] across [RISE_FRAMES]
- * shows, so the first show puts the card flush against the bottom edge - it pops
- * up from there, rather than appearing already in mid-air - and the last settles
- * it at its resting height.
- *
- * The climb eases out rather than stepping evenly: each show lifts the card by a
- * smaller share of the remaining distance, so it leaves the edge briskly and
- * settles softly, which is what a pop-up reads as. The easing is arithmetic
- * because a file-scope `const val` may only hold a primitive or a String -
- * `const val RISE_GAP = listOf(...)` is rejected with "Const 'val' has type
- * 'List<Int>'. Only primitive types and 'String' are allowed" - and the frame
- * count is the part of this contract [WakeChatService] has to see, so it has to
- * be an Int.
- */
-const val RISE_FRAMES = 6
-
-/**
  * The session half of the wake pipeline.
  *
  * A [VoiceInteractionService] can keep LocalAssistant listening while the app is
@@ -482,12 +476,14 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
     private var reply = ""
 
     /**
-     * Which step of the climb from the bottom edge the next show is.
+     * How far through the climb or sink the next show is, from "0" at the bottom
+     * edge to "1" settled at rest.
      *
      * The session is created per exchange, so this counts from the first show of
-     * an exchange and never needs resetting.
+     * an exchange and never needs resetting. One position drives both the height
+     * and the ink, which is what ties the slide and the fade into one motion.
      */
-    private var riseFrame = 0
+    private var riseProgress = 0f
 
     /**
      * Which blink of the caret the next show is, so a still-arriving answer can
@@ -629,11 +625,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         state = args.getString(SESSION_STATE_KEY) ?: ""
         request = args.getString(SESSION_REQUEST_KEY) ?: ""
         reply = args.getString(SESSION_REPLY_KEY) ?: ""
-        if (state == SESSION_STATE_RISE) {
-            if (riseFrame < RISE_FRAMES) riseFrame++
-        } else {
-            riseFrame = RISE_FRAMES
-        }
+        riseProgress = settledProgress(args.getString(SESSION_ANIM_KEY))
         caretFrame++
         rescale()
         userShown = wrap(request, USER_MAX_LINES)
@@ -671,7 +663,9 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
      */
     private fun sizeWindow() {
         val surface = windowSurface() ?: return
-        val needed = if (state == SESSION_STATE_CLOSE) 0 else neededHeight(userShown.size, replyShown.size)
+        val needed =
+            if (state == SESSION_STATE_CLOSE && riseProgress <= 0f) 0
+            else neededHeight(userShown.size, replyShown.size)
         val risen = riseHeight()
         val wanted = if (needed > risen) needed else risen
         val limit = px(MAX_CARD_HEIGHT)
@@ -685,7 +679,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         surface.setBackgroundDrawable(clearShape)
         Log.i(
             "WakeChatSessionService",
-            "Cut the window to ${px(CARD_OUTER_WIDTH) + ring} by ${height} for a ${tall}-tall card at frame ${riseFrame} (scale $scale)"
+            "Cut the window to ${px(CARD_OUTER_WIDTH) + ring} by ${height} for a ${tall}-tall card at $riseProgress (scale $scale)"
         )
     }
 
@@ -896,14 +890,18 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         statusLine.text = ""
         userLines.forEach { line -> line.text = "" }
         replyLines.forEach { line -> line.text = "" }
-        val closed = state == SESSION_STATE_CLOSE
+        // The ink carries the animation's share of its strength, so a card that is
+        // climbing arrives fading rather than appearing at full strength in mid-air
+        // - see [tint] for why colour is applied on every show.
+        tint()
+        val closed = state == SESSION_STATE_CLOSE && riseProgress <= 0f
         val bothTurns = request.isNotBlank() && reply.isNotBlank()
         card.background = if (closed) clearShape else elevationShape
         panel.background = if (closed) clearShape else cardShape
         divider.background = if (closed || !bothTurns) clearShape else dividerShape
         phaseChip.background = if (closed) clearShape else phaseShape()
         statusLine.text = if (closed) "" else statusLabel()
-        statusLine.setTextColor(if (closed) TRANSPARENT else GRUVBOX_ON_SURFACE_MUTED)
+        statusLine.setTextColor(if (closed) TRANSPARENT else ink(GRUVBOX_ON_SURFACE_MUTED))
         userBubble.background = if (request.isBlank()) clearShape else userShape
         replyBubble.background = if (reply.isBlank()) clearShape else replyShape
         val userPad = if (request.isBlank()) 0 else px(BUBBLE_PADDING)
@@ -920,6 +918,47 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         replyShown.forEachIndexed { index, line ->
             if (index < replyLines.size) replyLines[index].text = line
         }
+    }
+
+    /**
+     * Re-tints every shape and text run the card owns to the current progress.
+     *
+     * Colour is applied on every show rather than at the shapes' construction so
+     * [rescale] stays the owner of geometry alone: the shapes are rebuilt only when
+     * the card rescales, while their ink changes on every frame of a climb, and
+     * mutating an existing [GradientDrawable]'s colour costs far less than building
+     * a new one per frame. Setting every shape on every show, settled or not, is what
+     * returns a shape that a climb faded back to full strength - a colour left behind
+     * by the frame before would otherwise stay translucent for the whole exchange.
+     */
+    private fun tint() {
+        cardShape.setColor(ink(WAKE_CARD_SURFACE))
+        elevationShape.setColor(ink(WAKE_CARD_ELEVATION))
+        userShape.setColor(ink(WAKE_USER_BUBBLE))
+        replyShape.setColor(ink(WAKE_REPLY_BUBBLE))
+        dividerShape.setColor(ink(WAKE_DIVIDER))
+        caretShape.setColor(ink(GRUVBOX_PRIMARY))
+        chipListening.setColor(ink(WAKE_PHASE_LISTENING))
+        chipThinking.setColor(ink(WAKE_PHASE_THINKING))
+        chipAnswering.setColor(ink(WAKE_PHASE_ANSWERING))
+        chipFault.setColor(ink(GRUVBOX_ERROR))
+        userLines.forEach { line -> line.setTextColor(ink(GRUVBOX_ON_SURFACE)) }
+        replyLines.forEach { line -> line.setTextColor(ink(GRUVBOX_PRIMARY)) }
+    }
+
+    /**
+     * A palette token carrying the current progress's share of its ink.
+     *
+     * The alpha byte is the only fade a session has: a widget takes one background
+     * and a [GradientDrawable] has no opacity of its own, so the translucency already
+     * baked into [WAKE_CARD_SURFACE] is scaled rather than replaced - the card keeps
+     * letting the screen read through it at full strength, it just arrives translucent.
+     */
+    private fun ink(argb: Int): Int {
+        if (riseProgress >= 1f) return argb
+        if (riseProgress <= 0f) return TRANSPARENT
+        val alpha = ((argb ushr 24) * riseProgress).toInt()
+        return (argb and 0x00FFFFFF) or (alpha shl 24)
     }
 
     /**
@@ -961,6 +1000,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         SESSION_STATE_STREAMING -> "Answering…"
         SESSION_STATE_SPEAKING -> "Speaking…"
         SESSION_STATE_REPLY -> "Here you go"
+        SESSION_STATE_CLOSE -> ""
         else -> "Something went wrong"
     }
 
@@ -990,14 +1030,44 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
      * upward from the bottom edge: the first show is a stub against the edge and
      * the last settles the card at [CARD_HEIGHT]. The climb eases out, so each
      * show adds a smaller share of what is left and the card leaves the edge
-     * briskly and settles softly, which is what a pop-up reads as. A closed
-     * exchange has no card at all, so it is cut to nothing.
+     * briskly and settles softly, which is what a pop-up reads as.
+     *
+     * The same position run backwards is the sink, which is why a closing
+     * exchange leaves the way it came rather than blinking out: at "0" there is
+     * no card at all, so the last frame of the sink is a hair of ink against the
+     * edge, and the fade means nothing has to jump.
      */
     private fun riseHeight(): Int {
-        if (state == SESSION_STATE_CLOSE) return 0
-        if (riseFrame >= RISE_FRAMES) return px(CARD_HEIGHT)
-        val remaining = 1f - (riseFrame - 1) / (RISE_FRAMES - 1f)
-        return (px(CARD_HEIGHT) * (1f - remaining * remaining)).toInt()
+        if (riseProgress <= 0f) return 0
+        return (px(CARD_HEIGHT) * eased(riseProgress)).toInt()
+    }
+
+    /**
+     * The climb's easing: distance travelled as a share of the show's progress,
+     * decelerating so the card leaves the edge briskly and settles softly.
+     *
+     * Arithmetic on one Float is the whole curve, which is what lets the sink reuse
+     * it: reversing the ladder of progress values reverses the curve with it, so the
+     * two directions are symmetric by construction rather than by two curves that
+     * have to be kept in step.
+     */
+    private fun eased(progress: Float): Float = 1f - (1f - progress) * (1f - progress)
+
+    /**
+     * The progress this show was handed, clamped into the range the card draws in.
+     *
+     * Only the climb and the sink carry a position: every other state is an open
+     * exchange at rest, and a show that names no state at all is treated as closed
+     * rather than as a card frozen in mid-air. A missing or unparseable position
+     * settles the exchange rather than hiding it, so a wake service that stops
+     * animating still draws the card it has always drawn.
+     */
+    private fun settledProgress(travel: String?): Float {
+        if (state != SESSION_STATE_RISE && state != SESSION_STATE_CLOSE) return 1f
+        val raw = travel?.toFloatOrNull() ?: 1f
+        if (raw <= 0f) return 0f
+        if (raw >= 1f) return 1f
+        return raw
     }
 
     /**
@@ -1098,7 +1168,7 @@ private class WakeChatSession(private val context: android.app.Service) : VoiceI
         state = ""
         request = ""
         reply = ""
-        riseFrame = 0
+        riseProgress = 0f
         measuring = true
         measuredShortEdge = 0
         scale = 1f
