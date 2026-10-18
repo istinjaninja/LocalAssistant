@@ -44,6 +44,16 @@ data class AppSettings(
     // so the default is the per-sentence path: the first sentence plays while the next
     // is still being synthesized.
     val enableTtsStreaming: Boolean = true,
+
+    // MCP tool servers (Model Context Protocol over streamable HTTP, no stdio).
+    val enableMcpTools: Boolean = false,
+    // One server endpoint per line. Their tools are offered to the model, which is
+    // what lets it answer "what time is it" from a clock tool instead of guessing.
+    val mcpServerUrls: String = "",
+    // Offer one meta-tool that names a server tool as an argument instead of
+    // putting every schema in the request, which keeps a large tool list out of
+    // the context window.
+    val mcpLazyTools: Boolean = true,
     
     // System Prompt
     val systemPrompt: String = """You are LocalAssistant, running on the user's Android device.
@@ -95,4 +105,11 @@ data class AppSettings(
         get() = llmBaseUrl == DEFAULT_LLM_BASE_URL &&
             sttBaseUrl == DEFAULT_STT_BASE_URL &&
             ttsBaseUrl == DEFAULT_TTS_BASE_URL
+
+    /**
+     * True only when tools are switched on and at least one server is named, so a service
+     * can skip discovery entirely when the user has never opted in.
+     */
+    val mcpReady: Boolean
+        get() = enableMcpTools && mcpServerUrls.isNotBlank()
 }

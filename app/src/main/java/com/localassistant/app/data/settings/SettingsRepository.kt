@@ -60,6 +60,9 @@ class SettingsRepository(private val context: Context) {
             ttsApiKey = sharedPreferences.getString("tts_api_key", defaults.ttsApiKey) ?: defaults.ttsApiKey,
             ttsResponseFormat = sharedPreferences.getString("tts_response_format", defaults.ttsResponseFormat) ?: defaults.ttsResponseFormat,
             enableTtsStreaming = sharedPreferences.getBoolean("enable_tts_streaming", defaults.enableTtsStreaming),
+            enableMcpTools = sharedPreferences.getBoolean("enable_mcp_tools", defaults.enableMcpTools),
+            mcpServerUrls = sharedPreferences.getString("mcp_server_urls", defaults.mcpServerUrls) ?: defaults.mcpServerUrls,
+            mcpLazyTools = sharedPreferences.getBoolean("mcp_lazy_tools", defaults.mcpLazyTools),
 
             autoTtsEnabled = sharedPreferences.getBoolean("auto_tts_enabled", defaults.autoTtsEnabled),
             autoExpandReasoning = sharedPreferences.getBoolean("auto_expand_reasoning", defaults.autoExpandReasoning),
@@ -113,6 +116,9 @@ class SettingsRepository(private val context: Context) {
             putString("tts_api_key", settings.ttsApiKey)
             putString("tts_response_format", settings.ttsResponseFormat)
             putBoolean("enable_tts_streaming", settings.enableTtsStreaming)
+            putBoolean("enable_mcp_tools", settings.enableMcpTools)
+            putString("mcp_server_urls", settings.mcpServerUrls)
+            putBoolean("mcp_lazy_tools", settings.mcpLazyTools)
 
             putBoolean("auto_tts_enabled", settings.autoTtsEnabled)
             putBoolean("auto_expand_reasoning", settings.autoExpandReasoning)
@@ -242,6 +248,9 @@ class SettingsRepository(private val context: Context) {
         appendStr(sb, "ttsApiKey", settings.ttsApiKey)
         appendStr(sb, "ttsResponseFormat", settings.ttsResponseFormat)
         appendBool(sb, "enableTtsStreaming", settings.enableTtsStreaming)
+        appendBool(sb, "enableMcpTools", settings.enableMcpTools)
+        appendStr(sb, "mcpServerUrls", settings.mcpServerUrls)
+        appendBool(sb, "mcpLazyTools", settings.mcpLazyTools)
         appendStr(sb, "systemPrompt", settings.systemPrompt)
         appendStr(sb, "wakeWordName", settings.wakeWordName)
         appendBool(sb, "enableWakeWordDetection", settings.enableWakeWordDetection)
@@ -335,6 +344,9 @@ class SettingsRepository(private val context: Context) {
                 ttsApiKey = extract("ttsApiKey", base.ttsApiKey),
                 ttsResponseFormat = extract("ttsResponseFormat", base.ttsResponseFormat),
                 enableTtsStreaming = extractBool("enableTtsStreaming", base.enableTtsStreaming),
+                enableMcpTools = extractBool("enableMcpTools", base.enableMcpTools),
+                mcpServerUrls = extract("mcpServerUrls", base.mcpServerUrls),
+                mcpLazyTools = extractBool("mcpLazyTools", base.mcpLazyTools),
                 systemPrompt = extract("systemPrompt", base.systemPrompt),
                 wakeWordName = extract("wakeWordName", base.wakeWordName),
                 enableWakeWordDetection = extractBool("enableWakeWordDetection", base.enableWakeWordDetection),

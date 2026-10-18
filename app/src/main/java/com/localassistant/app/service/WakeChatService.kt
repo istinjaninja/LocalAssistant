@@ -10,6 +10,7 @@ import androidx.annotation.RequiresPermission
 import androidx.core.app.NotificationCompat
 import com.localassistant.app.LocalAssistantApplication
 import com.localassistant.app.data.remote.ApiClient
+import com.localassistant.app.data.remote.McpClient
 import com.localassistant.app.data.settings.SettingsRepository
 import com.localassistant.app.domain.model.ChatMessage
 import com.localassistant.app.ui.common.bestMatchCost
@@ -993,11 +994,16 @@ class WakeChatService : VoiceInteractionService() {
         val history = _messages.value.takeLast(MAX_LLM_CONTEXT).map { msg ->
             mapOf("role" to msg.role.name.lowercase(), "content" to msg.content)
         }
+        // Tools are offered only when the user opted in, because discovery sits on the critical
+        // path of the request: an install that never enabled MCP pays nothing.
+        val toolDescriptors =
+            if (currentSettings.mcpReady) McpClient.advertisedTools(currentSettings.mcpServerUrls, currentSettings.mcpLazyTools)
+            else emptyList()
         // The answer as it has arrived so far, and when it was last drawn.
         var streamed = ""
         var lastPaintMs = 0L
         return try {
-            ApiClient.chatCompletion(
+            ApiClient.chatCompletionWithTools(
                 baseUrl = currentSettings.llmBaseUrl,
                 apiKey = if (currentSettings.llmApiKey.isBlank()) null else currentSettings.llmApiKey,
                 messages = history,
@@ -1006,6 +1012,12 @@ class WakeChatService : VoiceInteractionService() {
                 reasoningBudgetTokens = currentSettings.llmReasoningBudgetTokens,
                 chatTemplateKwargs = currentSettings.llmChatTemplateKwargs,
                 systemPrompt = currentSettings.systemPrompt,
+                toolDescriptors = toolDescriptors,
+                // The answer to a tool call is fetched here so the loop in the API client can
+                // hand the result back to the model and ask again in the same exchange.
+                runTool = { name: String, argumentsJson: String ->
+                    McpClient.runNamedTool(currentSettings.mcpServerUrls, name, argumentsJson)
+                },
                 // Text arriving on the stream is activity on the chat, so the
                 // close clock follows the answer as it is written rather than
                 // waiting for it to finish.

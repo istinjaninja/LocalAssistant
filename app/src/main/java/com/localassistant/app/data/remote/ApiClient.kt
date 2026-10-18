@@ -20,6 +20,46 @@ object ApiClient {
     private const val DEFAULT_TIMEOUT = 60L // seconds
     
     /**
+     * The same exchange for callers that hold tools as plain maps - a `name`, a `description`
+     * and a `parameters` JSON schema - which is the shape an MCP server reports. The shapes
+     * used inside the client stay private to this file, so no conversation service has to
+     * name them.
+     */
+    suspend fun chatCompletionWithTools(
+        baseUrl: String,
+        apiKey: String? = null,
+        messages: List<Map<String, String>>,
+        model: String,
+        temperature: Float = 7.0f,
+        maxTokens: Int = 1024,
+        systemPrompt: String? = null,
+        stream: Boolean = true,
+        reasoningBudgetTokens: Int = 0,
+        chatTemplateKwargs: String = "",
+        timeoutSeconds: Long = DEFAULT_TIMEOUT,
+        toolDescriptors: List<Map<String, String>> = emptyList(),
+        runTool: (suspend (String, String) -> String)? = null,
+        abortSignal: AtomicBoolean? = null,
+        onChunk: ((String) -> Unit)? = null
+    ): ChatResponse = chatCompletionToolRounds(
+        baseUrl = baseUrl,
+        apiKey = apiKey,
+        messages = messages,
+        model = model,
+        temperature = temperature,
+        maxTokens = maxTokens,
+        systemPrompt = systemPrompt,
+        stream = stream,
+        reasoningBudgetTokens = reasoningBudgetTokens,
+        chatTemplateKwargs = chatTemplateKwargs,
+        timeoutSeconds = timeoutSeconds,
+        tools = toolDescriptors.map { toolSchemaOf(it) },
+        runTool = runTool,
+        abortSignal = abortSignal,
+        onChunk = onChunk
+    )
+
+    /**
      * Runs a whole tool exchange: ask, run what the model asked for, answer again, and keep
      * going until the model replies with words instead of calls.
      *
@@ -32,7 +72,7 @@ object ApiClient {
      * @param onChunk forwarded to every round, so streaming survives the loop.
      * @throws IOException from a round that failed, including a cancelled stream.
      */
-    suspend fun chatCompletionWithTools(
+    suspend fun chatCompletionToolRounds(
         baseUrl: String,
         apiKey: String? = null,
         messages: List<Map<String,String>>,
@@ -141,6 +181,16 @@ object ApiClient {
         val name: String,
         val description: String = "",
         val parametersJson: String = ""
+    )
+
+    /**
+     * A tool the caller holds as a plain map, turned into the shape the endpoint reads.
+     * A descriptor with no `parameters` entry is read as a tool that takes no arguments.
+     */
+    private fun toolSchemaOf(descriptor: Map<String, String>): ToolSchema = ToolSchema(
+        name = descriptor["name"] ?: "",
+        description = descriptor["description"] ?: "",
+        parametersJson = descriptor["parameters"] ?: ""
     )
 
     /**

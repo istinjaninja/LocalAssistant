@@ -344,6 +344,23 @@ fun SettingsScreen(onNavigateBack: () -> Unit, viewModel: SettingsViewModel = vi
                 TestButton("Test TTS", true, ttsTesting) { viewModel.runEndpointTest("tts") }
             }
 
+            SettingsSection("Tool Servers", "🔧", "Let the model ask a server to do something for it") {
+                SettingSwitch("Enable MCP Tools", settings.enableMcpTools, { viewModel.updateSetting("enableMcpTools", it) })
+                SettingTextField(
+                    "Server URLs",
+                    settings.mcpServerUrls,
+                    { viewModel.updateSetting("mcpServerUrls", it) },
+                    "One streamable-HTTP endpoint per line",
+                    maxLines = 4
+                )
+                SettingSwitch("Advertise Tools Lazily", settings.mcpLazyTools, { viewModel.updateSetting("mcpLazyTools", it) })
+                Text(
+                    text = "Tools reach the model only when both switches are on and a server is named. Lazy mode offers the model one entry point that names a tool as an argument, which keeps a large tool list out of its context; turning it off sends every schema and lets the model choose directly. A server that cannot be reached is skipped, and its tools are simply not offered.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
             SettingsSection("Appearance", "🎨", "How the interface looks") {
                 SettingSwitch("Dark Mode (gray Gruvbox)", settings.darkModeEnabled, { viewModel.updateSetting("darkModeEnabled", it) })
             }

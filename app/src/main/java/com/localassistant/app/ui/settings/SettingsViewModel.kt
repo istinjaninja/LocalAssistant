@@ -134,6 +134,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             // TTS Settings
             "enableTtsStreaming" -> _settings.update { it.copy(enableTtsStreaming = value as Boolean) }
 
+            // MCP tool servers
+            "enableMcpTools" -> _settings.update { it.copy(enableMcpTools = value as Boolean) }
+            "mcpServerUrls" -> _settings.update { it.copy(mcpServerUrls = value as String) }
+            "mcpLazyTools" -> _settings.update { it.copy(mcpLazyTools = value as Boolean) }
+
             // Advanced / Debug Settings
             "debugLoggingEnabled" -> _settings.update { it.copy(debugLoggingEnabled = value as Boolean) }
             "httpTimeoutSeconds" -> _settings.update { it.copy(httpTimeoutSeconds = value as Int) }

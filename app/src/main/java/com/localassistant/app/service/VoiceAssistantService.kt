@@ -18,6 +18,7 @@ import androidx.annotation.RequiresPermission
 import androidx.core.app.NotificationCompat
 import com.localassistant.app.LocalAssistantApplication
 import com.localassistant.app.data.remote.ApiClient
+import com.localassistant.app.data.remote.McpClient
 import com.localassistant.app.ui.common.isNonSpeechTranscript
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -629,7 +630,7 @@ class VoiceAssistantService : Service() {
                     maxRetries = MAX_RETRIES,
                     delayMs = RETRY_DELAY_MS
                 ) {
-                    ApiClient.chatCompletion(
+                    ApiClient.chatCompletionWithTools(
                         baseUrl = llmBaseUrl,
                         apiKey = apiKey,
                         messages = messagesList,
@@ -639,6 +640,12 @@ class VoiceAssistantService : Service() {
                         reasoningBudgetTokens = currentSettings.llmReasoningBudgetTokens,
                         chatTemplateKwargs = currentSettings.llmChatTemplateKwargs,
                         systemPrompt = currentSettings.systemPrompt,
+                        toolDescriptors = if (currentSettings.mcpReady) McpClient.advertisedTools(currentSettings.mcpServerUrls, currentSettings.mcpLazyTools) else emptyList(),
+                        // The answer to a tool call is fetched here so the loop in the API client
+                        // can hand the result back to the model and ask again in the same exchange.
+                        runTool = { name: String, argumentsJson: String ->
+                            McpClient.runNamedTool(currentSettings.mcpServerUrls, name, argumentsJson)
+                        },
                         timeoutSeconds = currentSettings.httpTimeoutSeconds.toLong()
                     )
                 }
