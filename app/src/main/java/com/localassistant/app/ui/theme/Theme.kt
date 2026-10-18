@@ -11,10 +11,10 @@ import androidx.compose.ui.graphics.Color
  *
  * The palette is stored as plain ARGB integers (see [Palette]) because the wake
  * card is drawn by the system, which has no Compose to ask for a colour object.
- * The mask is what keeps a negative Int from sign-extending into the alpha when
- * it widens to the ULong this constructor wants.
+ * The Int overload is the one that reads a bare ARGB value: the ULong overload
+ * expects androidx's own packed form, whose high bits name a colour space.
  */
-private fun paint(argb: Int): Color = Color((argb.toLong() and 0x00000000FFFFFFFFL).toULong())
+private fun paint(argb: Int): Color = Color(argb)
 
 // Gruvbox Dark colors (gray background variant, dark mode, Gruvbox accents preserved)
 private val GruvboxDarkPrimary = paint(GRUVBOX_PRIMARY)
