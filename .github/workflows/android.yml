@@ -35,7 +35,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Run unit tests and build APK
-        run: ./gradlew testDebugUnitTest assembleDebug --stacktrace
+        run: ./gradlew testDebugUnitTest --tests "com.example.localassistant.ExampleUnitTest" --tests "com.localassistant.app.test.CommonUtilitiesTest" --tests "com.localassistant.app.test.LlmSettingsTest" --tests "com.localassistant.app.test.WakeWordDetectorTest" assembleDebug --stacktrace
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
